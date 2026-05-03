@@ -1,0 +1,32 @@
+---
+description: Python coding standards for all *.py in this repository
+alwaysApply: true
+---
+
+# Python coding standards
+
+These rules apply to **all** Python in this repository (`*.py`). Automated coding agents and humans must follow them when adding or editing Python unless a task explicitly says otherwise.
+
+**Simplicity first.** Prefer straightforward, functional code: short, readable units, clear data flow, no unnecessary abstraction. Do not reach for verbose type annotations, heavy `typing` idioms, or extra runtime type-checking when simple code would do. Use types and checks only where they materially improve clarity or correctness (see lean type hints below).
+
+1. **No leading-underscore names** — Do not name functions, methods, or variables with a leading underscore (e.g. `_foo`). Use normal names; “private by convention” does not use that prefix. Third-party APIs and import paths are unchanged.
+
+2. **snake_case** — Functions and variables use `snake_case` (e.g. `test_user`, `run_requests`).
+
+3. **Lean type hints** — Do not blanket-annotate signatures or decorate APIs with typing ceremony for its own sake. Skip exhaustive unions, generics, casts, and `TYPE_CHECKING` glue unless something in this repo actually consumes those annotations. Add hints only where the runtime or a static checker truly needs them (e.g. when `dispatcher` coercion reads `inspect.Parameter.annotation` for tool entrypoints).
+
+4. **Shebang** — The first line of every Python file is `#!/usr/bin/env python3`.
+
+5. **Module docstrings** — If a file has a module docstring, use a real multi-line docstring: opening `"""` on its own line, at least one full line of body text, closing `"""` on its own line. Do not use a one-line `"""..."""` sandwich. A typical form is:
+   - `Author: …` on one line;
+   - `Description: …` on one line (what the module is for).
+
+6. **Imports** — After the shebang and optional module docstring (and blank line): when the file imports anything, put `# Imports` on its own line immediately before the import block. All `import` and `from … import` lines form one contiguous block with **no** blank lines inside it. One blank line after that block, then the rest of the file.
+
+7. **No inline imports** — Do not place `import` or `from … import` inside functions, methods, class bodies, or other nested scopes. Use the module-level `# Imports` block only (stdlib and third-party together per item 6).
+
+8. **Comments** — Prefer self-explanatory code.
+   - **Section headings** — Optional sparse `# …` lines to scan the file: `# Imports` (before imports); `# Constants` (or similar) before grouped module-level assignments when there are no imports or before a distinct constants block; brief phrases before a function or group when useful (e.g. `# Load data`, `# Iterate over the URLs`). Light touch—not every function needs a heading.
+   - **Inside functions** — Only where helpful; at most a handful per function; prefer **two or three words** each for non-obvious logic. No paragraphs or line-by-line narration.
+
+9. **Function and method docstrings** — Do not add docstrings that only restate the function name or a literal walkthrough of what the code does (e.g. one-liners like “Yield S3 URLs for…”). Omit them when behavior is obvious from names and implementation. Use docstrings sparingly for non-obvious contracts: edge cases, invariants, surprising side effects, or parameters that truly need explanation.
