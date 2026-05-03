@@ -137,8 +137,8 @@ def prefetch_station_weather(bounds_by_coord):
             weather_by_coord[(latitude, longitude)] = fetch_weather_range(
                 latitude, longitude, start_date, end_date
             )
-        except Exception as e:
-            print(f"Weather fetch failed at {latitude}, {longitude}: {e}")
+        except Exception:
+            pass
     return weather_by_coord
 
 
@@ -192,8 +192,7 @@ def transform(data: pd.DataFrame) -> pd.DataFrame:
             key = (end_bucket, end_station)
             bucket_counts[key] = bucket_counts.get(key, 0) + 1
             save_station_coordinate(station_coordinates, end_station, end_lat, end_lng)
-        except ValueError as e:
-            print(e)
+        except ValueError:
             continue
 
     if not bucket_counts:
@@ -227,7 +226,6 @@ def transform(data: pd.DataFrame) -> pd.DataFrame:
         weather_by_hour = station_hourly_weather.get((latitude, longitude), {})
         weather = weather_by_hour.get(weather_hour)
         if weather is None:
-            print(f"Missing weather for {weather_hour} at {latitude}, {longitude}")
             continue
 
         rows.append(
