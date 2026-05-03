@@ -26,4 +26,4 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run main
-        run: python main.py 30 40
+        run: python main.py --data 30 40

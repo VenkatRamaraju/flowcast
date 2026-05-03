@@ -38,6 +38,8 @@ htmlcov/
 # Logs and local data
 *.log
 *.sqlite3
+artifacts/*
+!artifacts/.gitkeep
 
 # IDE / OS
 .idea/

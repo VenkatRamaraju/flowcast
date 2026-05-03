@@ -10,7 +10,6 @@ import os
 import urllib.request
 import zipfile
 from pathlib import Path
-
 import boto3
 import pandas as pd
 from dotenv import load_dotenv

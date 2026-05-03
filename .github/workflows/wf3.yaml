@@ -1,7 +1,6 @@
 name: wf3
 
 on:
-  push:
   workflow_dispatch:
 
 jobs:
@@ -27,4 +26,4 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run main
-        run: python main.py 20 30
+        run: python main.py --data 20 30

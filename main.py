@@ -5,31 +5,35 @@ Description: Entrypoint to train a model
 """
 
 # Imports
-import sys
+import argparse
 from train.data.load import load, read_from_s3, upload_to_s3
 from train.data.transform import transform
+from train.model.model import train
 
-# Main
+
 def main():
-    # Full catalogue
-    entries = load()
-    # Optional indices
-    argv = sys.argv[1:]
-    if argv:
-        # CLI index range
-        start = int(argv[0])
-        stop = int(argv[1]) if len(argv) > 1 else None
-        entries = entries[start:stop]
+    parser = argparse.ArgumentParser(description="Flowcast ETL and training entrypoint")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--train", action="store_true", help="Run incremental XGBoost training")
+    mode.add_argument(
+        "--data",
+        nargs=2,
+        type=int,
+        metavar=("START", "STOP"),
+        help="Run ETL on catalogue slice entries[START:STOP]",
+    )
+    args = parser.parse_args()
 
+    if args.train:
+        train()
+        return
+
+    start, stop = args.data
+    entries = load()[start:stop]
     for entry in entries:
-        # Download source
         print(f"Downloading {entry[0]}")
         data = read_from_s3(entry)
-
-        # Normalize frame
         transformed_data = transform(data)
-
-        # Upload result
         upload_to_s3(transformed_data, entry)
 
 
