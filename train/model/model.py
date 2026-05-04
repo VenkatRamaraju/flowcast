@@ -155,11 +155,12 @@ def train():
         print(f"Resuming from {MODEL_PATH} with {total_trees:,} trees")
 
     for i, (key, raw) in enumerate(iter_csv_files()):
+        print("=" * 80)
         if key in processed_keys:
             print(f"Skipping {key}")
             continue
 
-        print(f"\nStarting file {i + 1}: {key}")
+        print(f"Starting file {i + 1}: {key}")
         current_rounds = 0 if booster is None else booster.num_boosted_rounds()
         rounds_left = MAX_TOTAL_ROUNDS - current_rounds
         if rounds_left <= 0:
