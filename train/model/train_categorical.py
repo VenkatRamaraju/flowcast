@@ -129,6 +129,7 @@ def train(bucket=DEFAULT_BUCKET, prefix=""):
     print(f"Held out files: {len(held_out_keys):,}")
     print(f"Training rows: {len(df):,}")
     print(f"Station categories: {len(station_categories):,}")
+    print(df.head())
 
     dtrain = make_dmatrix(df, station_categories)
     print(f"Training {NUM_BOOST_ROUNDS:,} trees")
