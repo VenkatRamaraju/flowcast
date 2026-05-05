@@ -12,7 +12,7 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from train.model.data import DEFAULT_BUCKET
-from train.model.train_categorical import FEATURES, HELD_OUT_KEYS_PATH, MODEL_PATH, STATION_CATEGORIES_PATH, TARGET, make_dmatrix, normalize_station_ids, read_csv, validate_columns
+from train.model.model import FEATURES, HELD_OUT_KEYS_PATH, MODEL_PATH, STATION_CATEGORIES_PATH, TARGET, make_dmatrix, normalize_station_ids, read_csv, validate_columns
 
 
 def read_json(path):
@@ -58,18 +58,15 @@ def eval():
 
     correct = int(np.sum(rounded == y))
     accuracy = correct / len(y)
-    mse = mean_squared_error(y, preds)
-    rmse = np.sqrt(mse)
-    mae = mean_absolute_error(y, preds)
-
-    print(df[TARGET].describe())
-    print(df[TARGET].value_counts().head(20))
+    raw_mse = mean_squared_error(y, preds)
+    raw_rmse = np.sqrt(raw_mse)
+    raw_mae = mean_absolute_error(y, preds)
 
     print(f"Rows evaluated : {len(y):,}")
     print(f"Correct (exact): {correct:,} / {len(y):,}  ({accuracy:.2%})")
-    print(f"Mean sq error  : {mse:.4f}")
-    print(f"Root mean sq   : {rmse:.4f}")
-    print(f"Mean abs error : {mae:.4f}")
+    print(f"Raw mean sq error  : {raw_mse:.4f}")
+    print(f"Raw root mean sq   : {raw_rmse:.4f}")
+    print(f"Raw mean abs error : {raw_mae:.4f}")
 
 
 if __name__ == "__main__":

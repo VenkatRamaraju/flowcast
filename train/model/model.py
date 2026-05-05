@@ -1,43 +1,45 @@
 #!/usr/bin/env python3
 """
 Author: Venkat Ramaraju
-Description: Train an XGBoost net_flow regressor incrementally over streamed S3 CSVs
+Description: Train an XGBoost net_flow regressor with categorical station IDs
 """
 
 # Imports
 import json
 from pathlib import Path
-import numpy as np
+import boto3
 import pandas as pd
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error
-from train.model.data import iter_csv_files
+from train.model.data import DEFAULT_BUCKET, list_csv_keys
 
 # Constants
 FEATURES = ["day_of_week", "time_bucket", "station_id", "temperature", "precipitation", "wind"]
 TARGET = "net_flow"
 MODEL_COLUMNS = FEATURES + [TARGET]
 ARTIFACTS_DIR = Path(__file__).resolve().parents[2] / "artifacts"
-MODEL_PATH = ARTIFACTS_DIR / "model.ubj"
-CHECKPOINT_PATH = ARTIFACTS_DIR / "checkpoint.json"
-STATION_MAP_PATH = ARTIFACTS_DIR / "station_map.json"
-ROUNDS_PER_FILE = 36
-MAX_TOTAL_ROUNDS = 3_600
-TEST_SIZE = 0.1
+MODEL_PATH = ARTIFACTS_DIR / "model-categorical.ubj"
+STATION_CATEGORIES_PATH = ARTIFACTS_DIR / "station-categories.json"
+HELD_OUT_KEYS_PATH = ARTIFACTS_DIR / "held-out-keys.json"
+TRAIN_FILES = 95
+HELD_OUT_FILES = 5
+EXPECTED_FILES = TRAIN_FILES + HELD_OUT_FILES
+NUM_BOOST_ROUNDS = 3_000
+VALIDATION_FILES = 5
+EARLY_STOPPING_ROUNDS = 200
 
 XGB_PARAMS = {
     "objective": "reg:squarederror",
     "eval_metric": "rmse",
     "tree_method": "hist",
-    "max_depth": 9,
-    "min_child_weight": 50,
-    "learning_rate": 0.03,
-    "subsample": 0.85,
-    "colsample_bytree": 0.85,
-    "reg_lambda": 2.0,
-    "reg_alpha": 0.1,
+    "max_depth": 8,
+    "min_child_weight": 8,
+    "learning_rate": 0.06,
+    "subsample": 0.9,
+    "colsample_bytree": 0.9,
+    "reg_lambda": 1.0,
+    "reg_alpha": 0.0,
     "max_bin": 256,
+    "max_cat_to_onehot": 16,
     "seed": 42,
     "verbosity": 1,
 }
@@ -51,29 +53,8 @@ def validate_columns(df, key):
         )
 
 
-def encode_stations(series, station_map):
-    station_values = series.astype(str)
-    for val in station_values.unique():
-        if val not in station_map:
-            station_map[val] = len(station_map)
-    return station_values.map(station_map)
-
-
-def prepare(df, station_map):
-    df = df.copy()
-    df["station_id"] = encode_stations(df["station_id"], station_map)
-    return df
-
-
 def ensure_artifacts_dir():
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def read_json(path, default):
-    if not path.exists():
-        return default
-    with path.open() as file:
-        return json.load(file)
 
 
 def write_json(path, data):
@@ -83,139 +64,106 @@ def write_json(path, data):
     temp_path.replace(path)
 
 
-def artifact_path(state, field, default_path):
-    file_name = state.get(field)
-    if not file_name:
-        return default_path
-    return ARTIFACTS_DIR / file_name
-
-
-def checkpoint_id(state):
-    return (
-        f"{len(state['processed_keys']):06d}-"
-        f"{state['total_rounds']:06d}-"
-        f"{state['rows_seen']:012d}"
-    )
-
-
-def load_booster(path):
-    if not path.exists():
-        return None
-    booster = xgb.Booster()
-    booster.load_model(str(path))
-    return booster
-
-
 def save_model(booster, path):
     temp_path = path.with_name(f"{path.stem}.tmp{path.suffix}")
     booster.save_model(str(temp_path))
     temp_path.replace(path)
 
 
-def save_checkpoint(booster, station_map, state):
-    ensure_artifacts_dir()
-    artifact_id = checkpoint_id(state)
-    model_path = ARTIFACTS_DIR / f"model-{artifact_id}.ubj"
-    station_map_path = ARTIFACTS_DIR / f"station-map-{artifact_id}.json"
-
-    save_model(booster, model_path)
-    write_json(station_map_path, station_map)
-
-    checkpoint = dict(state)
-    checkpoint["checkpoint_version"] = 2
-    checkpoint["model_file"] = model_path.name
-    checkpoint["station_map_file"] = station_map_path.name
-    write_json(CHECKPOINT_PATH, checkpoint)
+def read_csv(client, bucket, key):
+    body = client.get_object(Bucket=bucket, Key=key)["Body"]
+    return pd.read_csv(body)
 
 
-def load_training_state():
-    ensure_artifacts_dir()
-    state = read_json(
-        CHECKPOINT_PATH,
-        {"processed_keys": [], "rows_seen": 0, "total_rounds": 0},
-    )
-    state.setdefault("processed_keys", [])
-    state.setdefault("rows_seen", 0)
-    state.setdefault("total_rounds", 0)
-    booster = load_booster(artifact_path(state, "model_file", MODEL_PATH))
-    station_map = read_json(artifact_path(state, "station_map_file", STATION_MAP_PATH), {})
-    return booster, station_map, state
+def normalize_station_ids(series):
+    cleaned = series.astype("string").str.strip()
+    numeric = pd.to_numeric(cleaned, errors="coerce")
+    as_int = numeric.round().astype("Int64")
+    normalized = cleaned.mask(as_int.notna(), as_int.astype("string"))
+    return normalized.astype(str)
 
 
-def train():
-    booster, station_map, state = load_training_state()
-    processed_keys = set(state["processed_keys"])
-    print(
-        f"Loaded state | processed files: {len(processed_keys):,} | "
-        f"rows seen: {state['rows_seen']:,}"
-    )
-
-    if booster is not None:
-        total_trees = booster.num_boosted_rounds()
-        print(f"Resuming from {MODEL_PATH} with {total_trees:,} trees")
-
-    for i, (key, raw) in enumerate(iter_csv_files()):
-        print("=" * 80)
-        if key in processed_keys:
-            print(f"Skipping {key}")
-            continue
-
-        print(f"Starting file {i + 1}: {key}")
-        current_rounds = 0 if booster is None else booster.num_boosted_rounds()
-        rounds_left = MAX_TOTAL_ROUNDS - current_rounds
-        if rounds_left <= 0:
-            print(f"Stopping at {MAX_TOTAL_ROUNDS:,} trees")
-            break
-
-        rounds_this_file = min(ROUNDS_PER_FILE, rounds_left)
-        print(f"Preparing {len(raw):,} rows")
+def load_training_data(client, bucket, keys):
+    frames = []
+    for i, key in enumerate(keys):
+        raw = read_csv(client, bucket, key)
         validate_columns(raw, key)
-        df = prepare(raw, station_map)
+        frames.append(raw)
+        print(f"Loaded file {i + 1:,}/{len(keys):,}: {key} | rows: {len(raw):,}")
+    df = pd.concat(frames, ignore_index=True)
+    df["station_id"] = normalize_station_ids(df["station_id"])
+    return df
 
-        X = df[FEATURES].values
-        y = df[TARGET].values
 
-        print("Splitting train/test")
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=TEST_SIZE, random_state=42
-        )
+def prepare(df, station_categories):
+    df = df.copy()
+    categories = pd.CategoricalDtype(categories=station_categories)
+    df["station_id"] = df["station_id"].astype(categories)
+    return df
 
-        # Incremental train
-        print(
-            f"Training {rounds_this_file:,} trees | "
-            f"current trees: {current_rounds:,}"
-        )
-        dtrain = xgb.DMatrix(X_train, label=y_train)
-        booster = xgb.train(
-            XGB_PARAMS,
-            dtrain,
-            num_boost_round=rounds_this_file,
-            xgb_model=booster,
-            verbose_eval=True,
-        )
 
-        dtest = xgb.DMatrix(X_test)
-        preds = booster.predict(dtest)
-        rmse = np.sqrt(mean_squared_error(y_test, preds))
-        mae = mean_absolute_error(y_test, preds)
-        state["processed_keys"].append(key)
-        state["rows_seen"] += len(df)
-        state["total_rounds"] = booster.num_boosted_rounds()
-        print("Saving checkpoint")
-        save_checkpoint(booster, station_map, state)
+def make_dmatrix(df, station_categories):
+    df = prepare(df, station_categories)
+    return xgb.DMatrix(
+        df[FEATURES],
+        label=df[TARGET],
+        enable_categorical=True,
+    )
 
-        total_trees = booster.num_boosted_rounds()
-        print(
-            f"Batch {i + 1} | file: {key} | rows: {len(df):,} | "
-            f"rmse: {rmse:.4f} | mae: {mae:.4f} | total trees: {total_trees:,}"
-        )
 
-    if booster is None:
-        print("No training data found")
+def train(bucket=DEFAULT_BUCKET, prefix=""):
+    ensure_artifacts_dir()
+    client = boto3.client("s3")
+    keys = list_csv_keys(bucket=bucket, prefix=prefix)
+    if len(keys) != EXPECTED_FILES:
+        print(f"Expected {EXPECTED_FILES} files, got {len(keys)}")
+        return
+    if TRAIN_FILES <= VALIDATION_FILES:
+        print("TRAIN_FILES must be greater than VALIDATION_FILES")
         return
 
+    train_keys = keys[:TRAIN_FILES]
+    fit_keys = train_keys[:-VALIDATION_FILES]
+    validation_keys = train_keys[-VALIDATION_FILES:]
+    held_out_keys = keys[TRAIN_FILES:]
+    write_json(HELD_OUT_KEYS_PATH, held_out_keys)
+
+    df_train = load_training_data(client, bucket, fit_keys)
+    df_validation = load_training_data(client, bucket, validation_keys)
+    station_categories = sorted(
+        set(df_train["station_id"].unique()) | set(df_validation["station_id"].unique())
+    )
+    write_json(STATION_CATEGORIES_PATH, station_categories)
+
+    print(f"Training files: {len(train_keys):,}")
+    print(f"Fit files: {len(fit_keys):,}")
+    print(f"Validation files: {len(validation_keys):,}")
+    print(f"Held out files: {len(held_out_keys):,}")
+    print(f"Fit rows: {len(df_train):,}")
+    print(f"Validation rows: {len(df_validation):,}")
+    print(f"Station categories: {len(station_categories):,}")
+
+    dtrain = make_dmatrix(df_train, station_categories)
+    dvalidation = make_dmatrix(df_validation, station_categories)
+    print(f"Training {NUM_BOOST_ROUNDS:,} trees")
+    booster = xgb.train(
+        XGB_PARAMS,
+        dtrain,
+        num_boost_round=NUM_BOOST_ROUNDS,
+        evals=[(dtrain, "train"), (dvalidation, "validation")],
+        callbacks=[
+            xgb.callback.EarlyStopping(
+                rounds=EARLY_STOPPING_ROUNDS,
+                save_best=True,
+            )
+        ],
+        verbose_eval=50,
+    )
+    print(f"Best iteration: {booster.best_iteration:,}")
+    print(f"Best validation rmse: {booster.best_score}")
+
     save_model(booster, MODEL_PATH)
-    write_json(STATION_MAP_PATH, station_map)
+    write_json(STATION_CATEGORIES_PATH, station_categories)
     print(f"Model saved to {MODEL_PATH}")
 
 
