@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import holidays
 import pandas as pd
 from tqdm import tqdm
 
@@ -43,11 +44,16 @@ REQUIRED_COLUMNS = [
 FEATURE_COLUMNS = [
     "day_of_week",
     "time_bucket",
+    "is_weekend",
+    "month",
+    "is_us_federal_holiday",
+    "commute_hours",
     "station_id",
     "temperature",
     "precipitation",
     "wind",
 ]
+US_FEDERAL_HOLIDAYS = holidays.US()
 TARGET_COLUMN = "net_flow"
 MODEL_COLUMNS = FEATURE_COLUMNS + [TARGET_COLUMN]
 
@@ -90,6 +96,30 @@ def floor_to_bucket(raw_time, column):
 def time_bucket_for(bucket_start):
     minutes_into_day = bucket_start.hour * 60 + bucket_start.minute
     return (minutes_into_day // 15) + 1
+
+
+def localize_bucket(bucket_start):
+    ts = pd.Timestamp(bucket_start)
+    if ts.tzinfo is not None:
+        return ts.tz_convert(WEATHER_TIMEZONE)
+    return ts.tz_localize(WEATHER_TIMEZONE, ambiguous=False, nonexistent="shift_forward")
+
+
+def calendar_features_for_bucket(bucket_start):
+    local_ts = localize_bucket(bucket_start)
+    minutes = local_ts.hour * 60 + local_ts.minute
+    weekend = local_ts.dayofweek >= 5
+    morning_commute = (6 * 60) <= minutes < (10 * 60)
+    evening_commute = (15 * 60) <= minutes < (19 * 60 + 30)
+    commute = (not weekend) and (morning_commute or evening_commute)
+    return {
+        "day_of_week": int(local_ts.dayofweek),
+        "time_bucket": int(time_bucket_for(local_ts)),
+        "is_weekend": bool(weekend),
+        "month": int(local_ts.month),
+        "is_us_federal_holiday": bool(local_ts.date() in US_FEDERAL_HOLIDAYS),
+        "commute_hours": bool(commute),
+    }
 
 
 def fetch_weather_range(latitude, longitude, start_date, end_date):
@@ -228,10 +258,15 @@ def transform(data: pd.DataFrame) -> pd.DataFrame:
         if weather is None:
             continue
 
+        cal = calendar_features_for_bucket(bucket)
         rows.append(
             {
-                "day_of_week": bucket.dayofweek,
-                "time_bucket": time_bucket_for(bucket),
+                "day_of_week": cal["day_of_week"],
+                "time_bucket": cal["time_bucket"],
+                "is_weekend": cal["is_weekend"],
+                "month": cal["month"],
+                "is_us_federal_holiday": cal["is_us_federal_holiday"],
+                "commute_hours": cal["commute_hours"],
                 "station_id": station_id,
                 "temperature": weather["temperature"],
                 "precipitation": weather["precipitation"],

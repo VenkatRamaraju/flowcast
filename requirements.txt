@@ -1,4 +1,5 @@
 pandas
+holidays
 boto3
 python-dotenv
 tqdm

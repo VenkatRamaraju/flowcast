@@ -15,7 +15,11 @@ from train.model.eval import eval
 def main():
     parser = argparse.ArgumentParser(description="Flowcast ETL and training entrypoint")
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--train", action="store_true", help="Run incremental XGBoost training")
+    mode.add_argument(
+        "--train",
+        action="store_true",
+        help="Run incremental XGBoost training (S3 mixed CSVs must match train.model.model.MODEL_COLUMNS)",
+    )
     mode.add_argument("--eval", action="store_true", help="Evaluate model on held-out eval file")
     mode.add_argument(
         "--data",

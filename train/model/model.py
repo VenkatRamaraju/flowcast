@@ -13,7 +13,18 @@ import xgboost as xgb
 from train.model.data import DEFAULT_BUCKET, list_csv_keys
 
 # Constants
-FEATURES = ["day_of_week", "time_bucket", "station_id", "temperature", "precipitation", "wind"]
+FEATURES = [
+    "day_of_week",
+    "time_bucket",
+    "is_weekend",
+    "month",
+    "is_us_federal_holiday",
+    "commute_hours",
+    "station_id",
+    "temperature",
+    "precipitation",
+    "wind",
+]
 TARGET = "net_flow"
 MODEL_COLUMNS = FEATURES + [TARGET]
 ARTIFACTS_DIR = Path(__file__).resolve().parents[2] / "artifacts"
@@ -47,10 +58,18 @@ XGB_PARAMS = {
 
 def validate_columns(df, key):
     columns = list(df.columns)
-    if columns != MODEL_COLUMNS:
-        raise ValueError(
-            f"{key} has columns {columns}, expected exactly {MODEL_COLUMNS}"
+    if columns == MODEL_COLUMNS:
+        return
+    missing = [column for column in MODEL_COLUMNS if column not in columns]
+    message = f"{key} has columns {columns}, expected exactly {MODEL_COLUMNS}."
+    if missing:
+        message += (
+            f" Missing {missing}. These rows were built with an older transform schema. "
+            "Re-run ETL so S3 gets the new columns: "
+            "`python main.py --data 0 <N>` over your catalogue slice (see train.data.load.load), "
+            "then rebuild and upload `mixed/part-*.csv` to the bucket train() reads from."
         )
+    raise ValueError(message)
 
 
 def ensure_artifacts_dir():
