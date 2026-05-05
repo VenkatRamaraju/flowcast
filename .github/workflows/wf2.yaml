@@ -1,6 +1,7 @@
 name: wf2
 
 on:
+  push:
   workflow_dispatch:
 
 jobs:

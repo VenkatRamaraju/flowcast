@@ -1,6 +1,7 @@
 name: wf8
 
 on:
+  push:
   workflow_dispatch:
 
 jobs:

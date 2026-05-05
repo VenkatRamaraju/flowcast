@@ -1,6 +1,7 @@
 name: wf4
 
 on:
+  push:
   workflow_dispatch:
 
 jobs:
