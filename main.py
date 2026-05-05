@@ -8,6 +8,7 @@ Description: Entrypoint to train a model
 import argparse
 from train.data.load import load, read_from_s3, upload_to_s3
 from train.data.transform import transform
+from train.model.data import MIXED_BUCKET
 from train.model.model import train
 from train.model.eval import eval
 
@@ -31,11 +32,11 @@ def main():
     args = parser.parse_args()
 
     if args.train:
-        train()
+        train(MIXED_BUCKET)
         return
 
     if args.eval:
-        eval()
+        eval(MIXED_BUCKET)
         return
 
     start, stop = args.data

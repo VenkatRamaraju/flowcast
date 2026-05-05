@@ -12,7 +12,7 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
-from train.model.data import iter_csv_files
+from train.model.data import MIXED_BUCKET, iter_csv_files
 
 # Constants
 FEATURES = ["day_of_week", "time_bucket", "station_id", "temperature", "precipitation", "wind"]
@@ -154,7 +154,7 @@ def train():
         total_trees = booster.num_boosted_rounds()
         print(f"Resuming from {MODEL_PATH} with {total_trees:,} trees")
 
-    for i, (key, raw) in enumerate(iter_csv_files()):
+    for i, (key, raw) in enumerate(iter_csv_files(MIXED_BUCKET)):
         print("=" * 80)
         if key in processed_keys:
             print(f"Skipping {key}")

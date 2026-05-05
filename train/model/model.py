@@ -10,7 +10,7 @@ from pathlib import Path
 import boto3
 import pandas as pd
 import xgboost as xgb
-from train.model.data import DEFAULT_BUCKET, list_csv_keys
+from train.model.data import MIXED_BUCKET, list_csv_keys
 
 # Constants
 FEATURES = [
@@ -44,7 +44,7 @@ XGB_PARAMS = {
     "tree_method": "hist",
     "max_depth": 8,
     "min_child_weight": 8,
-    "learning_rate": 0.06,
+    "learning_rate": 0.1,
     "subsample": 0.9,
     "colsample_bytree": 0.9,
     "reg_lambda": 1.0,
@@ -130,10 +130,10 @@ def make_dmatrix(df, station_categories):
     )
 
 
-def train(bucket=DEFAULT_BUCKET, prefix=""):
+def train(bucket):
     ensure_artifacts_dir()
     client = boto3.client("s3")
-    keys = list_csv_keys(bucket=bucket, prefix=prefix)
+    keys = list_csv_keys(bucket)
     if len(keys) != EXPECTED_FILES:
         print(f"Expected {EXPECTED_FILES} files, got {len(keys)}")
         return
@@ -187,4 +187,4 @@ def train(bucket=DEFAULT_BUCKET, prefix=""):
 
 
 if __name__ == "__main__":
-    train()
+    train(MIXED_BUCKET)
