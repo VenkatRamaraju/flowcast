@@ -95,16 +95,16 @@ def eval(bucket):
 
     correct = int(np.sum(rounded == y))
     accuracy = correct / len(y)
+    raw_mae = mean_absolute_error(y, preds)
     raw_mse = mean_squared_error(y, preds)
     raw_rmse = np.sqrt(raw_mse)
-    raw_mae = mean_absolute_error(y, preds)
 
     print("XGBoost model")
     print(f"Rows evaluated : {len(y):,}")
     print(f"Correct (exact): {correct:,} / {len(y):,}  ({accuracy:.2%})")
+    print(f"MAE (primary)      : {raw_mae:.4f}")
     print(f"Raw mean sq error  : {raw_mse:.4f}")
     print(f"Raw root mean sq   : {raw_rmse:.4f}")
-    print(f"Raw mean abs error : {raw_mae:.4f}")
 
 
 if __name__ == "__main__":

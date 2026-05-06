@@ -36,23 +36,24 @@ HELD_OUT_KEYS_PATH = ARTIFACTS_DIR / "held-out-keys.json"
 TRAIN_FILES = 95
 HELD_OUT_FILES = 5
 EXPECTED_FILES = TRAIN_FILES + HELD_OUT_FILES
-NUM_BOOST_ROUNDS = 3_000
+NUM_BOOST_ROUNDS = 6_000
 VALIDATION_FILES = 5
-EARLY_STOPPING_ROUNDS = 200
+EARLY_STOPPING_ROUNDS = 300
 
 XGB_PARAMS = {
-    "objective": "reg:squarederror",
-    "eval_metric": "rmse",
+    "objective": "reg:absoluteerror",
+    "eval_metric": "mae",
     "tree_method": "hist",
-    "max_depth": 8,
-    "min_child_weight": 8,
-    "learning_rate": 0.1,
-    "subsample": 0.9,
-    "colsample_bytree": 0.9,
+    "max_depth": 10,
+    "min_child_weight": 2,
+    "learning_rate": 0.05,
+    "subsample": 1.0,
+    "colsample_bytree": 1.0,
     "reg_lambda": 1.0,
     "reg_alpha": 0.0,
     "max_bin": 256,
-    "max_cat_to_onehot": 16,
+    "max_cat_to_onehot": 1,
+    "max_cat_threshold": 128,
     "seed": 42,
     "verbosity": 1,
 }
@@ -206,7 +207,7 @@ def train(bucket):
         verbose_eval=50,
     )
     print(f"Best iteration: {booster.best_iteration:,}")
-    print(f"Best validation rmse: {booster.best_score}")
+    print(f"Best validation mae: {booster.best_score}")
 
     save_model(booster, MODEL_PATH)
     write_json(STATION_CATEGORIES_PATH, station_categories)
