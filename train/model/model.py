@@ -36,9 +36,9 @@ HELD_OUT_KEYS_PATH = ARTIFACTS_DIR / "held-out-keys.json"
 TRAIN_FILES = 95
 HELD_OUT_FILES = 5
 EXPECTED_FILES = TRAIN_FILES + HELD_OUT_FILES
-NUM_BOOST_ROUNDS = 6_000
+NUM_BOOST_ROUNDS = 12_000
 VALIDATION_FILES = 5
-EARLY_STOPPING_ROUNDS = 300
+EARLY_STOPPING_ROUNDS = 500
 
 XGB_PARAMS = {
     "objective": "reg:absoluteerror",
@@ -46,7 +46,7 @@ XGB_PARAMS = {
     "tree_method": "hist",
     "max_depth": 10,
     "min_child_weight": 2,
-    "learning_rate": 0.05,
+    "learning_rate": 0.07,
     "subsample": 1.0,
     "colsample_bytree": 1.0,
     "reg_lambda": 1.0,
@@ -139,22 +139,30 @@ def make_dmatrix(df, station_categories):
 
 def print_pre_training_report(df_train, df_validation):
     df = pd.concat([df_train, df_validation], ignore_index=True)
-    y = np.round(df[TARGET].values).astype(np.int64)
-    y_min = int(y.min())
-    y_max = int(y.max())
-    rng = np.random.default_rng(42)
-    random_y = rng.integers(y_min, y_max + 1, size=len(y), endpoint=False)
-    acc = float(np.mean(random_y == y))
-    rmse = float(np.sqrt(mean_squared_error(y, random_y)))
-    mae = float(mean_absolute_error(y, random_y))
+    y_train = df_train[TARGET].to_numpy(dtype=np.float64)
+    y_val = df_validation[TARGET].to_numpy(dtype=np.float64)
+    y = np.concatenate([y_train, y_val])
+    train_mean = float(np.mean(y_train))
+    train_median = float(np.median(y_train))
+    pred_mean = np.full(len(y), train_mean)
+    pred_median = np.full(len(y), train_median)
+    mae_mean = float(mean_absolute_error(y, pred_mean))
+    rmse_mean = float(np.sqrt(mean_squared_error(y, pred_mean)))
+    mae_median = float(mean_absolute_error(y, pred_median))
+    rmse_median = float(np.sqrt(mean_squared_error(y, pred_median)))
     print(
-        f"Rows: {len(df_train):,} fit + {len(df_validation):,} val = {len(df):,}; "
+        f"Rows: {len(df_train):,} fit + {len(df_validation):,} val = {len(y):,}; "
         f"stations {df['station_id'].nunique():,}; "
-        f"net_flow min={y_min} max={y_max} mean={float(y.mean()):.2f} std={float(y.std()):.2f}"
+        f"net_flow min={float(np.min(y)):.2f} max={float(np.max(y)):.2f} "
+        f"mean={float(np.mean(y)):.2f} std={float(np.std(y)):.2f}"
     )
     print(
-        f"Uniform random int in [{y_min}, {y_max}] vs truth: "
-        f"accuracy={acc:.2%}  RMSE={rmse:.4f}  MAE={mae:.4f}"
+        f"Constant train mean={train_mean:.6f} on fit+val: "
+        f"RMSE={rmse_mean:.4f}  MAE={mae_mean:.4f}"
+    )
+    print(
+        f"Constant train median={train_median:.6f} on fit+val: "
+        f"RMSE={rmse_median:.4f}  MAE={mae_median:.4f}"
     )
 
 
