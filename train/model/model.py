@@ -8,8 +8,10 @@ Description: Train an XGBoost net_flow regressor with categorical station IDs
 import json
 from pathlib import Path
 import boto3
+import numpy as np
 import pandas as pd
 import xgboost as xgb
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 from train.model.data import MIXED_BUCKET, list_csv_keys
 
 # Constants
@@ -58,18 +60,16 @@ XGB_PARAMS = {
 
 def validate_columns(df, key):
     columns = list(df.columns)
-    if columns == MODEL_COLUMNS:
-        return
     missing = [column for column in MODEL_COLUMNS if column not in columns]
-    message = f"{key} has columns {columns}, expected exactly {MODEL_COLUMNS}."
     if missing:
+        message = f"{key} has columns {columns}, expected at least {MODEL_COLUMNS}."
         message += (
             f" Missing {missing}. These rows were built with an older transform schema. "
             "Re-run ETL so S3 gets the new columns: "
             "`python main.py --data 0 <N>` over your catalogue slice (see train.data.load.load), "
             "then rebuild and upload `mixed/part-*.csv` to the bucket train() reads from."
         )
-    raise ValueError(message)
+        raise ValueError(message)
 
 
 def ensure_artifacts_dir():
@@ -102,6 +102,11 @@ def normalize_station_ids(series):
     return normalized.astype(str)
 
 
+def drop_rows_with_integer_station_ids(df):
+    digits_only = df["station_id"].str.fullmatch(r"\d+", na=False)
+    return df.loc[~digits_only].reset_index(drop=True)
+
+
 def load_training_data(client, bucket, keys):
     frames = []
     for i, key in enumerate(keys):
@@ -111,6 +116,7 @@ def load_training_data(client, bucket, keys):
         print(f"Loaded file {i + 1:,}/{len(keys):,}: {key} | rows: {len(raw):,}")
     df = pd.concat(frames, ignore_index=True)
     df["station_id"] = normalize_station_ids(df["station_id"])
+    df = drop_rows_with_integer_station_ids(df)
     return df
 
 
@@ -127,6 +133,27 @@ def make_dmatrix(df, station_categories):
         df[FEATURES],
         label=df[TARGET],
         enable_categorical=True,
+    )
+
+
+def print_pre_training_report(df_train, df_validation):
+    df = pd.concat([df_train, df_validation], ignore_index=True)
+    y = np.round(df[TARGET].values).astype(np.int64)
+    y_min = int(y.min())
+    y_max = int(y.max())
+    rng = np.random.default_rng(42)
+    random_y = rng.integers(y_min, y_max + 1, size=len(y), endpoint=False)
+    acc = float(np.mean(random_y == y))
+    rmse = float(np.sqrt(mean_squared_error(y, random_y)))
+    mae = float(mean_absolute_error(y, random_y))
+    print(
+        f"Rows: {len(df_train):,} fit + {len(df_validation):,} val = {len(df):,}; "
+        f"stations {df['station_id'].nunique():,}; "
+        f"net_flow min={y_min} max={y_max} mean={float(y.mean()):.2f} std={float(y.std()):.2f}"
+    )
+    print(
+        f"Uniform random int in [{y_min}, {y_max}] vs truth: "
+        f"accuracy={acc:.2%}  RMSE={rmse:.4f}  MAE={mae:.4f}"
     )
 
 
@@ -152,7 +179,7 @@ def train(bucket):
     station_categories = sorted(
         set(df_train["station_id"].unique()) | set(df_validation["station_id"].unique())
     )
-    write_json(STATION_CATEGORIES_PATH, station_categories)
+    print_pre_training_report(df_train, df_validation)
 
     print(f"Training files: {len(train_keys):,}")
     print(f"Fit files: {len(fit_keys):,}")
@@ -184,7 +211,3 @@ def train(bucket):
     save_model(booster, MODEL_PATH)
     write_json(STATION_CATEGORIES_PATH, station_categories)
     print(f"Model saved to {MODEL_PATH}")
-
-
-if __name__ == "__main__":
-    train(MIXED_BUCKET)

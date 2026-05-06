@@ -31,6 +31,13 @@ def list_csv_keys(bucket):
     return sorted(keys)
 
 
+def tripdata_key_is_covid_period(key):
+    basename = key.rsplit("/", 1)[-1]
+    if len(basename) >= 6 and basename[:6].isdigit():
+        return basename[:4] in ("2020", "2021")
+    return False
+
+
 def iter_csv_dataframes(bucket):
     client = boto3.client("s3")
     keys = list_csv_keys(bucket)
@@ -47,14 +54,6 @@ def iter_csv_files(bucket):
         yield key, pd.read_csv(body)
 
 
-def get_eval_file(bucket):
-    client = boto3.client("s3")
-    keys = list_csv_keys(bucket)
-    key = keys[-1]
-    body = client.get_object(Bucket=bucket, Key=key)["Body"]
-    return key, pd.read_csv(body)
-
-
 def count_total_rows(bucket):
     total_rows = 0
     for dataframe in iter_csv_dataframes(bucket):
@@ -67,7 +66,14 @@ def mix_csv_files(
     random_state=42,
 ):
     client = boto3.client("s3")
-    keys = list_csv_keys(READ_BUCKET)
+    all_keys = list_csv_keys(READ_BUCKET)
+    keys = [
+        k
+        for k in all_keys
+        if "baywheels" in k.lower() and not tripdata_key_is_covid_period(k)
+    ]
+    if (n_skip := len(all_keys) - len(keys)) > 0:
+        print(f"Skipping {n_skip} CSV file(s) (not Bay Wheels name or COVID period)")
     frames = []
     for key in keys:
         print(f"Loading {key}")
@@ -98,3 +104,6 @@ def mix_csv_files(
             Body=part.to_csv(index=False).encode("utf-8"),
         )
         start = stop
+
+if __name__ == "__main__":
+    mix_csv_files()

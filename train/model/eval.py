@@ -12,7 +12,7 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from train.model.data import MIXED_BUCKET
-from train.model.model import FEATURES, HELD_OUT_KEYS_PATH, MODEL_PATH, STATION_CATEGORIES_PATH, TARGET, make_dmatrix, normalize_station_ids, read_csv, validate_columns
+from train.model.model import FEATURES, HELD_OUT_KEYS_PATH, MODEL_PATH, STATION_CATEGORIES_PATH, TARGET, drop_rows_with_integer_station_ids, make_dmatrix, normalize_station_ids, read_csv, validate_columns
 
 
 def read_json(path):
@@ -29,6 +29,7 @@ def load_eval_data(client, bucket, keys):
         print(f"Loaded eval file: {key} | rows: {len(raw):,}")
     df = pd.concat(frames, ignore_index=True)
     df["station_id"] = normalize_station_ids(df["station_id"])
+    df = drop_rows_with_integer_station_ids(df)
     return df
 
 
@@ -60,6 +61,12 @@ def eval(bucket):
     rand_mean_error = float(np.mean(random_preds - y))
     rand_rmse = float(np.sqrt(mean_squared_error(y, random_preds)))
     rand_mae = mean_absolute_error(y, random_preds)
+    zero_preds = np.zeros(len(y), dtype=np.int64)
+    zero_correct = int(np.sum(zero_preds == y))
+    zero_accuracy = zero_correct / len(y)
+    zero_mean_error = float(np.mean(zero_preds - y))
+    zero_rmse = float(np.sqrt(mean_squared_error(y, zero_preds)))
+    zero_mae = mean_absolute_error(y, zero_preds)
 
     print(
         f"Held-out net_flow (int): min={y_min:,} max={y_max:,} "
@@ -70,6 +77,12 @@ def eval(bucket):
     print(f"  Mean error       : {rand_mean_error:.4f}")
     print(f"  RMSE             : {rand_rmse:.4f}")
     print(f"  MAE              : {rand_mae:.4f}")
+    print()
+    print("Zero baseline (always predicts 0)")
+    print(f"  Accuracy (exact): {zero_correct:,} / {len(y):,}  ({zero_accuracy:.2%})")
+    print(f"  Mean error       : {zero_mean_error:.4f}")
+    print(f"  RMSE             : {zero_rmse:.4f}")
+    print(f"  MAE              : {zero_mae:.4f}")
     print()
 
     booster = load_booster()
