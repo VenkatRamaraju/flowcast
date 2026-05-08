@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from train.model.data import MIXED_BUCKET, list_csv_keys
+from src.model.data import MIXED_BUCKET, list_csv_keys
 
 # Constants
 FEATURES = [
@@ -68,7 +68,7 @@ def validate_columns(df, key):
         message += (
             f" Missing {missing}. These rows were built with an older transform schema. "
             "Re-run ETL so S3 gets the new columns: "
-            "`python main.py --data 0 <N>` over your catalogue slice (see train.data.load.load), "
+            "`python main.py --data 0 <N>` over your catalogue slice (see src.data.load.load), "
             "then rebuild and upload `mixed/part-*.csv` to the bucket train() reads from."
         )
         raise ValueError(message)

@@ -15,7 +15,7 @@ repo_root = Path(__file__).resolve().parents[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from train.model.model import FEATURES, MODEL_PATH, STATION_CATEGORIES_PATH
+from src.model.model import FEATURES, MODEL_PATH, STATION_CATEGORIES_PATH
 
 # Cached state
 _booster = None
@@ -78,7 +78,7 @@ def predict_net_flow(
     if missing:
         raise ValueError(
             f"Model expects features the API does not supply: {missing}. "
-            "Retrain with train.model.model.FEATURES or upgrade the API schema."
+            "Retrain with src.model.model.FEATURES or upgrade the API schema."
         )
     row = {name: values[name] for name in model_columns}
     df = pd.DataFrame([row], columns=model_columns)

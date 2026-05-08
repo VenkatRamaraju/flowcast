@@ -11,8 +11,8 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from train.model.data import MIXED_BUCKET
-from train.model.model import FEATURES, HELD_OUT_KEYS_PATH, MODEL_PATH, STATION_CATEGORIES_PATH, TARGET, drop_rows_with_integer_station_ids, make_dmatrix, normalize_station_ids, read_csv, validate_columns
+from src.model.data import MIXED_BUCKET
+from src.model.model import FEATURES, HELD_OUT_KEYS_PATH, MODEL_PATH, STATION_CATEGORIES_PATH, TARGET, drop_rows_with_integer_station_ids, make_dmatrix, normalize_station_ids, read_csv, validate_columns
 
 
 def read_json(path):

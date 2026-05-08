@@ -16,7 +16,7 @@ repo_root = Path(__file__).resolve().parents[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from train.model.data import MIXED_BUCKET, list_csv_keys
+from src.model.data import MIXED_BUCKET, list_csv_keys
 
 def print_two_conflicting_rows(bucket=MIXED_BUCKET, round_decimals=1):
     load_dotenv(repo_root / ".env")
