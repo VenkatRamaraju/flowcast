@@ -1,16 +1,43 @@
 #!/usr/bin/env python3
 """
 Author: Venkat Ramaraju
-Description: Entrypoint to train a model
+Description: Entrypoint for ETL, training, evaluation, and prediction API
 """
 
 # Imports
 import argparse
-from train.data.load import load, read_from_s3, upload_to_s3
-from train.data.transform import transform
-from train.model.data import MIXED_BUCKET
-from train.model.model import train
-from train.model.eval import eval
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+
+class PredictRequest(BaseModel):
+    day_of_week: int = Field(..., ge=0, le=6)
+    time_bucket: int = Field(..., ge=0)
+    is_weekend: bool
+    week_of_year: int = Field(..., ge=1, le=53)
+    month: int = Field(..., ge=1, le=12)
+    is_us_federal_holiday: bool
+    commute_hours: bool
+    station_id: str
+    temperature: float
+    precipitation: float
+    wind: float
+
+
+def create_app():
+    from train.model.inference import predict_net_flow
+
+    app = FastAPI(title="Flowcast", version="1.0")
+
+    @app.post("/predict")
+    def predict_endpoint(body: PredictRequest):
+        try:
+            prediction = predict_net_flow(**body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"prediction": prediction}
+
+    return app
 
 
 def main():
@@ -29,15 +56,36 @@ def main():
         metavar=("START", "STOP"),
         help="Run ETL on catalogue slice entries[START:STOP]",
     )
+    mode.add_argument(
+        "--server",
+        action="store_true",
+        help="Run FastAPI prediction server (uvicorn on 0.0.0.0:8000)",
+    )
     args = parser.parse_args()
 
     if args.train:
+        from train.model.data import MIXED_BUCKET
+        from train.model.model import train
+
         train(MIXED_BUCKET)
         return
 
     if args.eval:
+        from train.model.data import MIXED_BUCKET
+        from train.model.eval import eval
+
         eval(MIXED_BUCKET)
         return
+
+    if args.server:
+        import uvicorn
+
+        uvicorn.run(create_app(), host="0.0.0.0", port=8000)
+        return
+
+    from train.data.load import load, read_from_s3, upload_to_s3
+    from train.data.transform import transform
+    from train.model.data import MIXED_BUCKET
 
     start, stop = args.data
     entries = load()[start:stop]

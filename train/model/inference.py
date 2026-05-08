@@ -58,7 +58,7 @@ def predict_net_flow(
     if station_id not in station_categories:
         raise ValueError(f"Unknown station_id: {station_id!r}")
 
-    row = {
+    values = {
         "day_of_week": int(day_of_week),
         "time_bucket": int(time_bucket),
         "is_weekend": bool(is_weekend),
@@ -71,120 +71,19 @@ def predict_net_flow(
         "precipitation": float(precipitation),
         "wind": float(wind),
     }
-    df = pd.DataFrame([row], columns=FEATURES)
+    model_columns = booster.feature_names
+    if not model_columns:
+        model_columns = list(FEATURES)
+    missing = [name for name in model_columns if name not in values]
+    if missing:
+        raise ValueError(
+            f"Model expects features the API does not supply: {missing}. "
+            "Retrain with train.model.model.FEATURES or upgrade the API schema."
+        )
+    row = {name: values[name] for name in model_columns}
+    df = pd.DataFrame([row], columns=model_columns)
     df["station_id"] = df["station_id"].astype(station_dtype)
 
     dmatrix = xgb.DMatrix(df, enable_categorical=True)
     prediction = booster.predict(dmatrix)
-    return float(prediction[0])
-
-
-# Test samples
-def test():
-    load()
-
-    samples = [
-        {
-            "label": "Outside Lands festival exodus (Sat ~10:45pm, Aug)",
-            "params": {
-                "day_of_week": 5,
-                "time_bucket": 91,
-                "is_weekend": True,
-                "week_of_year": 33,
-                "month": 8,
-                "is_us_federal_holiday": False,
-                "commute_hours": False,
-                "station_id": "SF-Outside Lands-Temp",
-                "temperature": 56.9,
-                "precipitation": 0.0,
-                "wind": 8.6,
-            },
-        },
-        {
-            "label": "Hardly Strictly festival arrivals (Sat ~3pm, Oct)",
-            "params": {
-                "day_of_week": 5,
-                "time_bucket": 61,
-                "is_weekend": True,
-                "week_of_year": 41,
-                "month": 10,
-                "is_us_federal_holiday": False,
-                "commute_hours": False,
-                "station_id": "HS-1",
-                "temperature": 61.9,
-                "precipitation": 0.0,
-                "wind": 8.8,
-            },
-        },
-        {
-            "label": "Embarcadero AM commute inflow (Wed ~8:30am, Aug)",
-            "params": {
-                "day_of_week": 2,
-                "time_bucket": 35,
-                "is_weekend": False,
-                "week_of_year": 32,
-                "month": 8,
-                "is_us_federal_holiday": False,
-                "commute_hours": True,
-                "station_id": "SF-F28-3",
-                "temperature": 59.1,
-                "precipitation": 0.0,
-                "wind": 4.8,
-            },
-        },
-        {
-            "label": "Embarcadero PM commute outflow (Thu ~5pm, Jul)",
-            "params": {
-                "day_of_week": 3,
-                "time_bucket": 69,
-                "is_weekend": False,
-                "week_of_year": 28,
-                "month": 7,
-                "is_us_federal_holiday": False,
-                "commute_hours": True,
-                "station_id": "SF-F28-3",
-                "temperature": 64.2,
-                "precipitation": 0.0,
-                "wind": 13.0,
-            },
-        },
-        {
-            "label": "Quiet baseline (Tue 3am, Apr, mild + dry)",
-            "params": {
-                "day_of_week": 1,
-                "time_bucket": 13,
-                "is_weekend": False,
-                "week_of_year": 14,
-                "month": 4,
-                "is_us_federal_holiday": False,
-                "commute_hours": False,
-                "station_id": "SF-F28-3",
-                "temperature": 55.0,
-                "precipitation": 0.0,
-                "wind": 3.0,
-            },
-        },
-    ]
-
-    print(f"Running {len(samples)} sample inferences\n")
-    for i, sample in enumerate(samples, start=1):
-        prediction = predict_net_flow(**sample["params"])
-        print(f"Sample {i}: {sample['label']}")
-        print(f"  station_id    : {sample['params']['station_id']}")
-        print(f"  day_of_week   : {sample['params']['day_of_week']}")
-        print(f"  time_bucket   : {sample['params']['time_bucket']}")
-        print(f"  week_of_year  : {sample['params']['week_of_year']}")
-        print(f"  month         : {sample['params']['month']}")
-        print(f"  weekend       : {sample['params']['is_weekend']}")
-        print(f"  holiday       : {sample['params']['is_us_federal_holiday']}")
-        print(f"  commute       : {sample['params']['commute_hours']}")
-        print(
-            f"  weather       : {sample['params']['temperature']}F, "
-            f"{sample['params']['precipitation']}in, "
-            f"{sample['params']['wind']}mph"
-        )
-        print(f"  predicted net_flow: {prediction:+.4f}\n")
-
-
-if __name__ == "__main__":
-    test()
+    return round(float(prediction[0]), 2)
