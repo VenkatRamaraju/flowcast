@@ -31,11 +31,16 @@ def list_csv_keys(bucket):
     return sorted(keys)
 
 
-def tripdata_key_is_covid_period(key):
+def tripdata_key_yyyymm(key):
     basename = key.rsplit("/", 1)[-1]
     if len(basename) >= 6 and basename[:6].isdigit():
-        return basename[:4] in ("2020", "2021")
-    return False
+        return int(basename[:6])
+    return None
+
+
+def tripdata_key_is_from_jan_2022_or_later(key):
+    yyyymm = tripdata_key_yyyymm(key)
+    return yyyymm is not None and yyyymm >= 202201
 
 
 def iter_csv_dataframes(bucket):
@@ -70,10 +75,10 @@ def mix_csv_files(
     keys = [
         k
         for k in all_keys
-        if "baywheels" in k.lower() and not tripdata_key_is_covid_period(k)
+        if "baywheels" in k.lower() and tripdata_key_is_from_jan_2022_or_later(k)
     ]
     if (n_skip := len(all_keys) - len(keys)) > 0:
-        print(f"Skipping {n_skip} CSV file(s) (not Bay Wheels name or COVID period)")
+        print(f"Skipping {n_skip} CSV file(s) (not Bay Wheels name or before 2022-01)")
     frames = []
     for key in keys:
         print(f"Loading {key}")
@@ -107,3 +112,5 @@ def mix_csv_files(
 
 if __name__ == "__main__":
     mix_csv_files()
+    count = count_total_rows(MIXED_BUCKET)
+    print(f"Total rows: {count:,}")

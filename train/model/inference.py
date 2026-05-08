@@ -45,6 +45,7 @@ def predict_net_flow(
     day_of_week,
     time_bucket,
     is_weekend,
+    week_of_year,
     month,
     is_us_federal_holiday,
     commute_hours,
@@ -61,6 +62,7 @@ def predict_net_flow(
         "day_of_week": int(day_of_week),
         "time_bucket": int(time_bucket),
         "is_weekend": bool(is_weekend),
+        "week_of_year": int(week_of_year),
         "month": int(month),
         "is_us_federal_holiday": bool(is_us_federal_holiday),
         "commute_hours": bool(commute_hours),
@@ -88,6 +90,7 @@ def test():
                 "day_of_week": 5,
                 "time_bucket": 91,
                 "is_weekend": True,
+                "week_of_year": 33,
                 "month": 8,
                 "is_us_federal_holiday": False,
                 "commute_hours": False,
@@ -103,6 +106,7 @@ def test():
                 "day_of_week": 5,
                 "time_bucket": 61,
                 "is_weekend": True,
+                "week_of_year": 41,
                 "month": 10,
                 "is_us_federal_holiday": False,
                 "commute_hours": False,
@@ -118,6 +122,7 @@ def test():
                 "day_of_week": 2,
                 "time_bucket": 35,
                 "is_weekend": False,
+                "week_of_year": 32,
                 "month": 8,
                 "is_us_federal_holiday": False,
                 "commute_hours": True,
@@ -133,6 +138,7 @@ def test():
                 "day_of_week": 3,
                 "time_bucket": 69,
                 "is_weekend": False,
+                "week_of_year": 28,
                 "month": 7,
                 "is_us_federal_holiday": False,
                 "commute_hours": True,
@@ -148,6 +154,7 @@ def test():
                 "day_of_week": 1,
                 "time_bucket": 13,
                 "is_weekend": False,
+                "week_of_year": 14,
                 "month": 4,
                 "is_us_federal_holiday": False,
                 "commute_hours": False,
@@ -166,6 +173,7 @@ def test():
         print(f"  station_id    : {sample['params']['station_id']}")
         print(f"  day_of_week   : {sample['params']['day_of_week']}")
         print(f"  time_bucket   : {sample['params']['time_bucket']}")
+        print(f"  week_of_year  : {sample['params']['week_of_year']}")
         print(f"  month         : {sample['params']['month']}")
         print(f"  weekend       : {sample['params']['is_weekend']}")
         print(f"  holiday       : {sample['params']['is_us_federal_holiday']}")
