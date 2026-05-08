@@ -45,6 +45,7 @@ FEATURE_COLUMNS = [
     "day_of_week",
     "time_bucket",
     "is_weekend",
+    "week_of_year",
     "month",
     "is_us_federal_holiday",
     "commute_hours",
@@ -109,6 +110,7 @@ def calendar_features_for_bucket(bucket_start):
     local_ts = localize_bucket(bucket_start)
     minutes = local_ts.hour * 60 + local_ts.minute
     weekend = local_ts.dayofweek >= 5
+    week_of_year = min(int(local_ts.isocalendar().week), 52)
     morning_commute = (6 * 60) <= minutes < (10 * 60)
     evening_commute = (15 * 60) <= minutes < (19 * 60 + 30)
     commute = (not weekend) and (morning_commute or evening_commute)
@@ -116,6 +118,7 @@ def calendar_features_for_bucket(bucket_start):
         "day_of_week": int(local_ts.dayofweek),
         "time_bucket": int(time_bucket_for(local_ts)),
         "is_weekend": bool(weekend),
+        "week_of_year": week_of_year,
         "month": int(local_ts.month),
         "is_us_federal_holiday": bool(local_ts.date() in US_FEDERAL_HOLIDAYS),
         "commute_hours": bool(commute),
@@ -264,6 +267,7 @@ def transform(data: pd.DataFrame) -> pd.DataFrame:
                 "day_of_week": cal["day_of_week"],
                 "time_bucket": cal["time_bucket"],
                 "is_weekend": cal["is_weekend"],
+                "week_of_year": cal["week_of_year"],
                 "month": cal["month"],
                 "is_us_federal_holiday": cal["is_us_federal_holiday"],
                 "commute_hours": cal["commute_hours"],
