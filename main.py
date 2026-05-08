@@ -8,6 +8,8 @@ Description: Entrypoint for ETL, training, evaluation, and prediction API
 import argparse
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from src.api.live import router as live_router
+from src.api.station import router as stations_router
 
 
 class PredictRequest(BaseModel):
@@ -28,6 +30,8 @@ def create_app():
     from src.model.inference import predict_net_flow
 
     app = FastAPI(title="Flowcast", version="1.0")
+    app.include_router(stations_router)
+    app.include_router(live_router)
 
     @app.post("/predict")
     def predict_endpoint(body: PredictRequest):
