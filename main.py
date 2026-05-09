@@ -84,7 +84,7 @@ def main():
     if args.server:
         import uvicorn
 
-        uvicorn.run(create_app(), host="0.0.0.0", port=8000)
+        uvicorn.run(create_app(), host="0.0.0.0", port=9000)
         return
 
     from src.data.load import load, read_from_s3, upload_to_s3
