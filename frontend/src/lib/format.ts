@@ -15,8 +15,8 @@ export function regionLabel(code: string): string {
 }
 
 export function classifyFlow(prediction: number): FlowDirection {
-  if (prediction > 0.5) return "inflow";
-  if (prediction < -0.5) return "outflow";
+  if (prediction > 1) return "inflow";
+  if (prediction < -1) return "outflow";
   return "balanced";
 }
 

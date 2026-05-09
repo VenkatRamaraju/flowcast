@@ -8,7 +8,7 @@ Description: HTTP tests for POST /predict (net_flow regression)
 def assert_prediction_payload(response, low, high):
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) == {"prediction"}
+    assert set(body) == {"prediction", "temperature", "precipitation", "wind"}
     value = float(body["prediction"])
     assert low <= value <= high, f"prediction {value} not in [{low}, {high}]"
 

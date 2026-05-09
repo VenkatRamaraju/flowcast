@@ -16,6 +16,9 @@ export interface Station {
 export interface LiveResponse {
   station_id: StationId;
   prediction: number;
+  temperature: number;
+  precipitation: number;
+  wind: number;
 }
 
 /** Direction of net flow for visual treatment. */

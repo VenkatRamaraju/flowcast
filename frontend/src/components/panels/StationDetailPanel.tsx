@@ -114,8 +114,25 @@ function PanelInner({ station }: { station: Station }) {
           )}
         </div>
 
-        {/* Secondary stats grid */}
-        <div className="mt-6 grid grid-cols-2 gap-2.5">
+        <div className="mt-6 grid grid-cols-3 gap-2.5">
+          <Stat
+            label="Temp"
+            value={isLoading || !data ? null : `${data.temperature.toFixed(1)}°F`}
+            color="#cfd6e6"
+          />
+          <Stat
+            label="Precip"
+            value={isLoading || !data ? null : `${data.precipitation.toFixed(2)} in`}
+            color="#cfd6e6"
+          />
+          <Stat
+            label="Wind"
+            value={isLoading || !data ? null : `${data.wind.toFixed(1)} mph`}
+            color="#cfd6e6"
+          />
+        </div>
+
+        <div className="mt-2.5 grid grid-cols-2 gap-2.5">
           <Stat
             label="Direction"
             value={

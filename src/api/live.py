@@ -68,4 +68,4 @@ def live(station_id: str):
         prediction = predict_net_flow(**cal, station_id=station_id, **weather)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"station_id": station_id, "prediction": prediction}
+    return {"station_id": station_id, "prediction": prediction, **weather}

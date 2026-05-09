@@ -35,11 +35,17 @@ def create_app():
 
     @app.post("/predict")
     def predict_endpoint(body: PredictRequest):
+        payload = body.model_dump()
         try:
-            prediction = predict_net_flow(**body.model_dump())
+            prediction = predict_net_flow(**payload)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"prediction": prediction}
+        return {
+            "prediction": prediction,
+            "temperature": payload["temperature"],
+            "precipitation": payload["precipitation"],
+            "wind": payload["wind"],
+        }
 
     return app
 
