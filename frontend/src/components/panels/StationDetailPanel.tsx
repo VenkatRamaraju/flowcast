@@ -132,6 +132,29 @@ function PanelInner({ station }: { station: Station }) {
           />
         </div>
 
+        <div className="mt-2.5 grid grid-cols-4 gap-2.5">
+          <Stat
+            label="Bikes"
+            value={isLoading || !data ? null : `${data.num_bikes_available}`}
+            color="#cfd6e6"
+          />
+          <Stat
+            label="E-bikes"
+            value={isLoading || !data ? null : `${data.num_ebikes_available}`}
+            color="#cfd6e6"
+          />
+          <Stat
+            label="Docks"
+            value={isLoading || !data ? null : `${data.num_docks_available}`}
+            color="#cfd6e6"
+          />
+          <Stat
+            label="Disabled"
+            value={isLoading || !data ? null : `${data.num_bikes_disabled}`}
+            color="#cfd6e6"
+          />
+        </div>
+
         <div className="mt-2.5 grid grid-cols-2 gap-2.5">
           <Stat
             label="Direction"

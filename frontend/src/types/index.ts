@@ -19,6 +19,10 @@ export interface LiveResponse {
   temperature: number;
   precipitation: number;
   wind: number;
+  num_bikes_available: number;
+  num_ebikes_available: number;
+  num_docks_available: number;
+  num_bikes_disabled: number;
 }
 
 /** Direction of net flow for visual treatment. */
