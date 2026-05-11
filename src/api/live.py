@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 from src.data.transform import WEATHER_TIMEZONE, calendar_features_for_bucket
-from src.model.inference import predict_net_flow
+from src.model.xgboost.inference import predict_net_flow
 
 # Constants
 REPO_ROOT = Path(__file__).resolve().parents[2]

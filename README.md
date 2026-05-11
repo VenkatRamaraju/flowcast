@@ -1,6 +1,6 @@
 # Flowcast
 
-Flowcast predicts short-term bike station net flow for the Bay Area. It combines Bay Wheels trip history, station coordinates, calendar features, weather data, a trained XGBoost regression model, a FastAPI backend, and a map-first React frontend.
+Flowcast predicts short-term bike station net flow for the Bay Area. It combines Bay Wheels trip history, station coordinates, calendar features, weather data, a trained XGBoost regression model (with an optional PyTorch baseline under `src/model/nn/`), a FastAPI backend, and a map-first React frontend.
 
 ## Overview
 
@@ -13,7 +13,8 @@ Flowcast estimates the signed net bike flow at a station for a 15-minute window:
 The project is organized around four pieces:
 
 - `src/data/` downloads and transforms raw Bay Wheels trip data into model-ready rows.
-- `src/model/` trains, evaluates, saves, and loads the XGBoost model.
+- `src/model/xgboost/` trains, evaluates, saves, and loads the XGBoost model.
+- `src/model/nn/` holds an experimental PyTorch regressor; artifacts go under `artifacts/nn/`.
 - `src/api/` serves station metadata and live station forecasts through FastAPI.
 - `frontend/` renders an interactive Bay Area map and station detail panel.
 
@@ -28,12 +29,12 @@ flowchart LR
     TripData[Bay Wheels trip archives] --> Transform[src/data/transform.py]
     WeatherArchive[Open-Meteo archive API] --> Transform
     Transform --> MixedS3[S3 mixed CSV files]
-    MixedS3 --> Train[src/model/model.py]
-    Train --> Model[artifacts/model-categorical.ubj]
-    Train --> Categories[artifacts/station-categories.json]
+    MixedS3 --> Train[src/model/xgboost/model.py]
+    Train --> Model[artifacts/xgboost/model-categorical.ubj]
+    Train --> Categories[artifacts/xgboost/station-categories.json]
     Transform --> Mapping[artifacts/station-mapping.json]
 
-    Model --> Inference[src/model/inference.py]
+    Model --> Inference[src/model/xgboost/inference.py]
     Categories --> Inference
     Mapping --> API[FastAPI backend]
     Inference --> API
@@ -47,9 +48,10 @@ Important paths:
 - `main.py` is the CLI entrypoint for ETL, training, evaluation, and serving.
 - `src/data/load.py` builds Bay Wheels archive URLs and uploads transformed files to S3.
 - `src/data/transform.py` converts trips into station-level 15-minute net-flow rows.
-- `src/model/model.py` trains the categorical XGBoost regressor and writes model artifacts.
-- `src/model/eval.py` evaluates the saved model against held-out S3 files.
-- `src/model/inference.py` loads the saved booster and station category artifact for prediction.
+- `src/model/xgboost/model.py` trains the categorical XGBoost regressor and writes model artifacts.
+- `src/model/xgboost/eval.py` evaluates the saved model against held-out S3 files.
+- `src/model/xgboost/inference.py` loads the saved booster and station category artifact from `artifacts/xgboost/` for prediction.
+- `src/model/nn/model.py` trains the PyTorch MLP and writes checkpoints under `artifacts/nn/`.
 - `src/api/station.py` serves `artifacts/station-mapping.json`.
 - `src/api/live.py` fetches live weather and GBFS availability, derives calendar features, and runs inference.
 - `frontend/src/` contains the React application, API client, map, panels, and UI state.
@@ -77,18 +79,26 @@ is_us_federal_holiday, commute_hours, station_id,
 temperature, precipitation, wind, net_flow
 ```
 
-Generated artifacts are stored under `artifacts/`:
+Artifacts live under `artifacts/` with subfolders for each trainer:
 
-- `station-mapping.json` maps station IDs to latitude and longitude for the frontend and live API.
-- `station-categories.json` stores the categorical station ID vocabulary used by XGBoost inference.
-- `held-out-keys.json` stores the S3 CSV keys reserved for evaluation.
-- `model-categorical.ubj` is the trained XGBoost model artifact produced by training. This file is required for prediction but is not present in the current repository snapshot.
+- **`artifacts/`** (repo root under that folder)
+  - `station-mapping.json` maps station IDs to latitude and longitude for the frontend and live API.
+  - `predicthq_events.json` may be produced by `src/data/predicthq.py`; it is not used by the current feature set.
 
-`src/data/predicthq.py` can export nearby PredictHQ events to `artifacts/predicthq_events.json`, but the current model feature list in `src/model/model.py` does not include event-derived fields.
+- **`artifacts/xgboost/`** (XGBoost training and API inference)
+  - `station-categories.json` — categorical station ID vocabulary for `src/model/xgboost/inference.py`.
+  - `held-out-keys.json` — S3 CSV keys reserved for evaluation.
+  - `model-categorical.ubj` — trained booster; required for `/predict` and live endpoints. Not shipped in the repo snapshot.
+
+- **`artifacts/nn/`** (optional PyTorch baseline)
+  - `nn-model.pt` — best state dict when training improves validation MAE.
+  - `nn-model-best.json` — best validation MAE and epoch for that checkpoint.
+
+`src/data/predicthq.py` can export nearby PredictHQ events to `artifacts/predicthq_events.json`, but the current model feature list in `src/model/xgboost/model.py` does not include event-derived fields.
 
 ## Model Training Process and Results
 
-Training is implemented in `src/model/model.py`. The pipeline reads mixed CSV parts from the `lyft-training-data-mixed` S3 bucket, validates that each file contains the expected model columns, normalizes station IDs, drops rows with integer-only station IDs, and trains an XGBoost regressor with native categorical support for `station_id`.
+Training is implemented in `src/model/xgboost/model.py`. The pipeline reads mixed CSV parts from the `lyft-training-data-mixed` S3 bucket, validates that each file contains the expected model columns, normalizes station IDs, drops rows with integer-only station IDs, and trains an XGBoost regressor with native categorical support for `station_id`.
 
 The training split is defined in code:
 
@@ -99,11 +109,11 @@ The training split is defined in code:
 
 The model uses `reg:absoluteerror` with MAE as the evaluation metric, histogram tree construction, early stopping, and categorical splits. The current validation run reports an MAE of `1.08`. Training writes:
 
-- `artifacts/model-categorical.ubj`
-- `artifacts/station-categories.json`
-- `artifacts/held-out-keys.json`
+- `artifacts/xgboost/model-categorical.ubj`
+- `artifacts/xgboost/station-categories.json`
+- `artifacts/xgboost/held-out-keys.json`
 
-Evaluation is implemented in `src/model/eval.py`. It loads the held-out keys, compares the trained model against random and zero baselines, and prints exact rounded accuracy, MAE, MSE, and RMSE. Held-out metrics are produced by the evaluation command:
+Evaluation is implemented in `src/model/xgboost/eval.py`. It loads the held-out keys, compares the trained model against random and zero baselines, and prints exact rounded accuracy, MAE, MSE, and RMSE. Held-out metrics are produced by the evaluation command:
 
 ```bash
 python main.py --eval
@@ -162,7 +172,7 @@ Response body:
 }
 ```
 
-The endpoint validates the request with Pydantic, loads the XGBoost booster through `src/model/inference.py`, verifies that `station_id` exists in `station-categories.json`, and returns a rounded prediction.
+The endpoint validates the request with Pydantic, loads the XGBoost booster through `src/model/xgboost/inference.py`, verifies that `station_id` exists in `artifacts/xgboost/station-categories.json`, and returns a rounded prediction.
 
 ### `GET /stations/{station_id}/live`
 
@@ -217,7 +227,7 @@ In local development, Vite proxies `/stations` and `/predict` to `http://127.0.0
 - Python 3.11 or newer
 - Node.js and npm
 - AWS credentials if running ETL, training, or evaluation against S3
-- A trained `artifacts/model-categorical.ubj` file for prediction endpoints
+- A trained `artifacts/xgboost/model-categorical.ubj` file (and `artifacts/xgboost/station-categories.json`) for prediction endpoints
 
 ### Backend Setup
 
@@ -283,6 +293,12 @@ Evaluate the saved model:
 python main.py --eval
 ```
 
+Train the optional PyTorch baseline (reads the same mixed S3 layout; writes under `artifacts/nn/`):
+
+```bash
+python src/model/nn/model.py
+```
+
 The data and training steps require AWS credentials and S3 access. Relevant environment variables include:
 
 - `AWS_ACCESS_KEY_ID`
@@ -301,4 +317,4 @@ Backend tests use pytest:
 pytest
 ```
 
-The prediction tests skip automatically when `artifacts/model-categorical.ubj` or `artifacts/station-categories.json` is unavailable.
+The prediction tests skip automatically when `artifacts/xgboost/model-categorical.ubj` or `artifacts/xgboost/station-categories.json` is unavailable.

@@ -12,7 +12,7 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from src.model.data import MIXED_BUCKET
-from src.model.model import FEATURES, HELD_OUT_KEYS_PATH, MODEL_PATH, STATION_CATEGORIES_PATH, TARGET, drop_rows_with_integer_station_ids, make_dmatrix, normalize_station_ids, read_csv, validate_columns
+from src.model.xgboost.model import FEATURES, HELD_OUT_KEYS_PATH, MODEL_PATH, STATION_CATEGORIES_PATH, TARGET, drop_rows_with_integer_station_ids, make_dmatrix, normalize_station_ids, read_csv, validate_columns
 
 
 def read_json(path):
@@ -35,7 +35,7 @@ def load_eval_data(client, bucket, keys):
 
 def load_booster():
     if not MODEL_PATH.exists():
-        print("No model found in artifacts")
+        print(f"No model found at {MODEL_PATH}")
         return None
     booster = xgb.Booster()
     booster.load_model(str(MODEL_PATH))

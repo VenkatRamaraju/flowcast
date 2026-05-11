@@ -59,6 +59,13 @@ def iter_csv_files(bucket):
         yield key, pd.read_csv(body)
 
 
+def iter_csv_files_for_keys(bucket, keys):
+    client = boto3.client("s3")
+    for key in keys:
+        body = client.get_object(Bucket=bucket, Key=key)["Body"]
+        yield key, pd.read_csv(body)
+
+
 def count_total_rows(bucket):
     total_rows = 0
     for dataframe in iter_csv_dataframes(bucket):
@@ -109,6 +116,7 @@ def mix_csv_files(
             Body=part.to_csv(index=False).encode("utf-8"),
         )
         start = stop
+
 
 if __name__ == "__main__":
     mix_csv_files()

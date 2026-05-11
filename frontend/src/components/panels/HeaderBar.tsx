@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Bike } from "lucide-react";
+import { Bike, Github } from "lucide-react";
 
 interface Props {
   stationCount: number;
@@ -37,6 +37,28 @@ export function HeaderBar({ stationCount, loading }: Props) {
               stations
             </>
           )}
+        </div>
+      </div>
+      <div className="ml-auto pointer-events-auto">
+        <div className="glass flex items-center gap-3 rounded-2xl px-3.5 py-2.5 shadow-glass">
+          <a
+            href="https://github.com/VenkatRamaraju/flowcast#flowcast"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 text-[11.5px] text-white/80 transition hover:text-white"
+          >
+            <Github className="h-3.5 w-3.5" />
+            <span className="font-medium">README</span>
+          </a>
+          <div className="h-3.5 w-px bg-white/10" />
+          <a
+            href="https://venkatramaraju.github.io/website/"
+            target="_blank"
+            rel="noreferrer"
+            className="text-[11.5px] text-white/70 transition hover:text-white"
+          >
+            Created by <span className="text-white/90">Venkat Ramaraju</span>
+          </a>
         </div>
       </div>
     </motion.header>

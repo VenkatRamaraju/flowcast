@@ -27,7 +27,7 @@ class PredictRequest(BaseModel):
 
 
 def create_app():
-    from src.model.inference import predict_net_flow
+    from src.model.xgboost.inference import predict_net_flow
 
     app = FastAPI(title="Flowcast", version="1.0")
     app.include_router(stations_router)
@@ -56,7 +56,7 @@ def main():
     mode.add_argument(
         "--train",
         action="store_true",
-        help="Run incremental XGBoost training (S3 mixed CSVs must match src.model.model.MODEL_COLUMNS)",
+        help="Run model training for the selected backend",
     )
     mode.add_argument("--eval", action="store_true", help="Evaluate model on held-out eval file")
     mode.add_argument(
@@ -71,18 +71,30 @@ def main():
         action="store_true",
         help="Run FastAPI prediction server (uvicorn on 0.0.0.0:8000)",
     )
+    parser.add_argument(
+        "--model",
+        choices=["xgboost", "nn"],
+        default="xgboost",
+        help="Model backend for training (xgboost or nn)",
+    )
     args = parser.parse_args()
 
     if args.train:
         from src.model.data import MIXED_BUCKET
-        from src.model.model import train
+
+        if args.model == "xgboost":
+            from src.model.xgboost.model import train
+        else:
+            from src.model.nn.model import train
 
         train(MIXED_BUCKET)
         return
 
     if args.eval:
+        if args.model != "xgboost":
+            parser.error("--eval currently supports only --model xgboost")
         from src.model.data import MIXED_BUCKET
-        from src.model.eval import eval
+        from src.model.xgboost.eval import eval
 
         eval(MIXED_BUCKET)
         return

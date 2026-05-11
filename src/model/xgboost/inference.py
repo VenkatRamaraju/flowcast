@@ -11,22 +11,22 @@ from pathlib import Path
 import pandas as pd
 import xgboost as xgb
 
-repo_root = Path(__file__).resolve().parents[2]
+# Constants
+repo_root = Path(__file__).resolve().parents[3]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from src.model.model import FEATURES, MODEL_PATH, STATION_CATEGORIES_PATH
+from src.model.xgboost.model import FEATURES, MODEL_PATH, STATION_CATEGORIES_PATH
 
-# Cached state
-_booster = None
-_station_categories = None
-_station_dtype = None
+booster_cache = None
+station_categories_cache = None
+station_dtype_cache = None
 
 
 def load():
-    global _booster, _station_categories, _station_dtype
-    if _booster is not None:
-        return _booster, _station_categories, _station_dtype
+    global booster_cache, station_categories_cache, station_dtype_cache
+    if booster_cache is not None:
+        return booster_cache, station_categories_cache, station_dtype_cache
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"Model not found at {MODEL_PATH}")
     if not STATION_CATEGORIES_PATH.exists():
@@ -35,10 +35,10 @@ def load():
     booster.load_model(str(MODEL_PATH))
     with STATION_CATEGORIES_PATH.open() as file:
         station_categories = json.load(file)
-    _booster = booster
-    _station_categories = station_categories
-    _station_dtype = pd.CategoricalDtype(categories=station_categories)
-    return _booster, _station_categories, _station_dtype
+    booster_cache = booster
+    station_categories_cache = station_categories
+    station_dtype_cache = pd.CategoricalDtype(categories=station_categories)
+    return booster_cache, station_categories_cache, station_dtype_cache
 
 
 def predict_net_flow(
@@ -78,7 +78,7 @@ def predict_net_flow(
     if missing:
         raise ValueError(
             f"Model expects features the API does not supply: {missing}. "
-            "Retrain with src.model.model.FEATURES or upgrade the API schema."
+            "Retrain with src.model.xgboost.model.FEATURES or upgrade the API schema."
         )
     row = {name: values[name] for name in model_columns}
     df = pd.DataFrame([row], columns=model_columns)

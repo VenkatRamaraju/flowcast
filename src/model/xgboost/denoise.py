@@ -12,11 +12,13 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
-repo_root = Path(__file__).resolve().parents[2]
+# Constants
+repo_root = Path(__file__).resolve().parents[3]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from src.model.data import MIXED_BUCKET, list_csv_keys
+
 
 def print_two_conflicting_rows(bucket=MIXED_BUCKET, round_decimals=1):
     load_dotenv(repo_root / ".env")
@@ -88,6 +90,7 @@ def print_two_conflicting_rows(bucket=MIXED_BUCKET, round_decimals=1):
         print(pair[display_columns].to_string(index=False))
 
     return pd.concat(all_pairs, ignore_index=True)
+
 
 if __name__ == "__main__":
     print_two_conflicting_rows()

@@ -30,7 +30,7 @@ FEATURES = [
 ]
 TARGET = "net_flow"
 MODEL_COLUMNS = FEATURES + [TARGET]
-ARTIFACTS_DIR = Path(__file__).resolve().parents[2] / "artifacts"
+ARTIFACTS_DIR = Path(__file__).resolve().parents[3] / "artifacts" / "xgboost"
 MODEL_PATH = ARTIFACTS_DIR / "model-categorical.ubj"
 STATION_CATEGORIES_PATH = ARTIFACTS_DIR / "station-categories.json"
 HELD_OUT_KEYS_PATH = ARTIFACTS_DIR / "held-out-keys.json"
