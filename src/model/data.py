@@ -6,8 +6,11 @@ Description: Stream CSV objects from S3 as pandas DataFrames
 
 # Imports
 from pathlib import Path
+import time
 import boto3
 import pandas as pd
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -15,10 +18,37 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 # Constants
 READ_BUCKET = "lyft-training-data-enhanced"
 MIXED_BUCKET = "lyft-training-data-mixed"
+S3_CONFIG = Config(
+    connect_timeout=10,
+    read_timeout=180,
+    retries={"max_attempts": 10, "mode": "standard"},
+)
+CSV_READ_ATTEMPTS = 4
+CSV_READ_BACKOFF_SECONDS = 3
+
+
+def make_s3_client():
+    return boto3.client("s3", config=S3_CONFIG)
+
+
+def read_csv_object(client, bucket, key):
+    for attempt in range(1, CSV_READ_ATTEMPTS + 1):
+        try:
+            body = client.get_object(Bucket=bucket, Key=key)["Body"]
+            return pd.read_csv(body)
+        except (BotoCoreError, ClientError, TimeoutError) as exc:
+            if attempt == CSV_READ_ATTEMPTS:
+                raise
+            wait_seconds = CSV_READ_BACKOFF_SECONDS * attempt
+            print(
+                f"Retrying {key} after read failure "
+                f"({attempt}/{CSV_READ_ATTEMPTS}): {exc}"
+            )
+            time.sleep(wait_seconds)
 
 
 def list_csv_keys(bucket):
-    client = boto3.client("s3")
+    client = make_s3_client()
     paginator = client.get_paginator("list_objects_v2")
     pages = paginator.paginate(Bucket=bucket)
     keys = []
@@ -44,26 +74,23 @@ def tripdata_key_is_from_jan_2022_or_later(key):
 
 
 def iter_csv_dataframes(bucket):
-    client = boto3.client("s3")
+    client = make_s3_client()
     keys = list_csv_keys(bucket)
     for key in sorted(keys):
-        body = client.get_object(Bucket=bucket, Key=key)["Body"]
-        yield pd.read_csv(body)
+        yield read_csv_object(client, bucket, key)
 
 
 def iter_csv_files(bucket):
-    client = boto3.client("s3")
+    client = make_s3_client()
     keys = list_csv_keys(bucket)
     for key in keys:
-        body = client.get_object(Bucket=bucket, Key=key)["Body"]
-        yield key, pd.read_csv(body)
+        yield key, read_csv_object(client, bucket, key)
 
 
 def iter_csv_files_for_keys(bucket, keys):
-    client = boto3.client("s3")
+    client = make_s3_client()
     for key in keys:
-        body = client.get_object(Bucket=bucket, Key=key)["Body"]
-        yield key, pd.read_csv(body)
+        yield key, read_csv_object(client, bucket, key)
 
 
 def count_total_rows(bucket):
@@ -77,7 +104,7 @@ def mix_csv_files(
     output_files=100,
     random_state=42,
 ):
-    client = boto3.client("s3")
+    client = make_s3_client()
     all_keys = list_csv_keys(READ_BUCKET)
     keys = [
         k
@@ -89,8 +116,7 @@ def mix_csv_files(
     frames = []
     for key in keys:
         print(f"Loading {key}")
-        body = client.get_object(Bucket=READ_BUCKET, Key=key)["Body"]
-        frames.append(pd.read_csv(body))
+        frames.append(read_csv_object(client, READ_BUCKET, key))
 
     if not frames:
         print("No CSV files found")

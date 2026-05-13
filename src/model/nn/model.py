@@ -5,14 +5,13 @@ Description: Train a PyTorch net_flow regressor on mixed CSV data
 """
 
 # Imports
+import gc
 import json
-import os
 from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
 from src.model.data import MIXED_BUCKET, iter_csv_files_for_keys, list_csv_keys
 
 # Constants
@@ -85,8 +84,9 @@ def validate_columns(df, key):
 def normalize_station_ids(series):
     cleaned = series.astype("string").str.strip()
     numeric = pd.to_numeric(cleaned, errors="coerce")
-    as_int = numeric.round().astype("Int64")
-    normalized = cleaned.mask(as_int.notna(), as_int.astype("string"))
+    is_integer = numeric.notna() & ((numeric % 1) == 0)
+    as_int = numeric.where(is_integer).astype("Int64")
+    normalized = cleaned.mask(is_integer, as_int.astype("string"))
     return normalized
 
 
@@ -95,18 +95,30 @@ def drop_rows_with_integer_station_ids(df):
     return df.loc[~digits_only].reset_index(drop=True)
 
 
-def load_training_data(bucket, keys):
-    frames = []
+def iter_training_frames(bucket, keys):
     for i, (key, frame) in enumerate(iter_csv_files_for_keys(bucket, keys)):
         validate_columns(frame, key)
-        frames.append(frame)
-        print(f"Loaded file {i + 1:,}/{len(keys):,}: {key} | rows: {len(frame):,}")
-    if not frames:
-        raise ValueError("No data files found for this split")
-    df = pd.concat(frames, ignore_index=True)
-    df["station_id"] = normalize_station_ids(df["station_id"])
-    df = drop_rows_with_integer_station_ids(df)
-    return df
+        frame["station_id"] = normalize_station_ids(frame["station_id"])
+        frame = drop_rows_with_integer_station_ids(frame)
+        print(
+            f"Loaded file {i + 1:,}/{len(keys):,}: {key} | rows: {len(frame):,}"
+        )
+        yield key, frame
+
+
+def collect_station_categories(bucket, keys):
+    station_categories = set()
+    total_rows = 0
+    for key, frame in iter_training_frames(bucket, keys):
+        total_rows += len(frame)
+        station_categories.update(frame["station_id"].dropna().unique())
+        del frame
+        gc.collect()
+    if total_rows == 0:
+        raise ValueError("No rows found for this split")
+    if not station_categories:
+        raise ValueError("No station IDs found for this split")
+    return sorted(station_categories), total_rows
 
 
 def prepare(df, station_categories):
@@ -127,18 +139,49 @@ def prepare(df, station_categories):
     return work
 
 
-def make_dataset(df, station_categories):
+def make_arrays(df, station_categories):
     prepared = prepare(df, station_categories)
     if prepared.empty:
-        raise ValueError("No training rows remain after dropping incomplete rows")
-    features = prepared[FEATURES].to_numpy(dtype=np.float32)
-    target = prepared[TARGET].to_numpy(dtype=np.float32)
-    x = torch.from_numpy(features)
-    y = torch.from_numpy(target)
-    return TensorDataset(x, y)
+        return None
+    features = np.ascontiguousarray(
+        prepared[FEATURES].to_numpy(dtype=np.float32, copy=True)
+    )
+    target = np.ascontiguousarray(
+        prepared[TARGET].to_numpy(dtype=np.float32, copy=True)
+    )
+    return features, target
 
 
-def load_data(bucket, batch_size, num_workers):
+def iter_batches(features, target, batch_size, shuffle, rng):
+    row_count = len(target)
+    if shuffle:
+        order = rng.permutation(row_count)
+    else:
+        order = None
+    for start in range(0, row_count, batch_size):
+        stop = min(start + batch_size, row_count)
+        if order is None:
+            yield features[start:stop], target[start:stop]
+        else:
+            batch_rows = order[start:stop]
+            yield features[batch_rows], target[batch_rows]
+
+
+def iter_array_files(bucket, keys, station_categories):
+    for key, frame in iter_training_frames(bucket, keys):
+        arrays = make_arrays(frame, station_categories)
+        del frame
+        if arrays is None:
+            print(f"Skipped file with no usable rows: {key}")
+        else:
+            features, target = arrays
+            yield key, features, target
+            del features
+            del target
+        gc.collect()
+
+
+def load_data(bucket):
     keys = list_csv_keys(bucket)
     if len(keys) != EXPECTED_FILES:
         raise ValueError(f"Expected {EXPECTED_FILES} files, got {len(keys)}")
@@ -148,30 +191,15 @@ def load_data(bucket, batch_size, num_workers):
     train_keys = keys[:TRAIN_FILES]
     fit_keys = train_keys[:-VALIDATION_FILES]
     validation_keys = train_keys[-VALIDATION_FILES:]
-    df_train = load_training_data(bucket, fit_keys)
-    df_val = load_training_data(bucket, validation_keys)
-    station_categories = sorted(
-        set(df_train["station_id"].dropna().unique())
-        | set(df_val["station_id"].dropna().unique())
+    station_categories, total_rows = collect_station_categories(
+        bucket,
+        fit_keys + validation_keys,
     )
 
-    train_dataset = make_dataset(df_train, station_categories)
-    val_dataset = make_dataset(df_val, station_categories)
-    train_data = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
+    print(
+        f"Rows: {total_rows:,}; station categories: {len(station_categories):,}"
     )
-    val_data = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
-    return train_data, val_data, len(FEATURES)
+    return fit_keys, validation_keys, station_categories, len(FEATURES)
 
 
 def save_model(model, path):
@@ -209,28 +237,25 @@ def pick_batch_size(device):
     return 2048
 
 
-def pick_num_workers():
-    cpu_count = os.cpu_count() or 1
-    return min(8, max(1, cpu_count - 1))
-
-
 def train(bucket):
     learning_rate = 1e-3
     num_epochs = 20
     seed = 2024
+    rng = np.random.default_rng(seed)
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
-        device = torch.device("mps")
+        print("MPS detected; using CPU for stability")
+        device = torch.device("cpu")
     else:
         device = torch.device("cpu")
 
     batch_size = pick_batch_size(device)
-    num_workers = pick_num_workers()
-    print(
-        f"device={device} batch_size={batch_size:,} num_workers={num_workers}"
-    )
+    print(f"device={device} batch_size={batch_size:,}")
+    print("===== TRAINING START =====")
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -239,42 +264,66 @@ def train(bucket):
     if best_val_mae < float("inf"):
         print(f"Existing best val_mae: {best_val_mae:.4f} (must beat to save)")
 
-    train_data, val_data, input_dim = load_data(
-        bucket,
-        batch_size=batch_size,
-        num_workers=num_workers,
-    )
+    fit_keys, validation_keys, station_categories, input_dim = load_data(bucket)
+
     # Build model
     model = FlowcastNet(input_dim=input_dim).to(device)
+
     # Training setup
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = nn.L1Loss()
 
     for epoch in range(num_epochs):
+        print(f"===== EPOCH {epoch + 1}/{num_epochs} =====")
         # Train mode
         model.train()
         total_train_loss = 0.0
         total_train_rows = 0
+        batch_index = 0
 
         # Train batches
-        for features, target in train_data:
-            # Move tensors
-            features = features.to(device)
-            target = target.to(device)
+        for key, features_array, target_array in iter_array_files(
+            bucket,
+            fit_keys,
+            station_categories,
+        ):
+            print(f"Training file: {key}")
+            for features_batch, target_batch in iter_batches(
+                features_array,
+                target_array,
+                batch_size,
+                shuffle=True,
+                rng=rng,
+            ):
+                batch_index += 1
+                # Move tensors
+                features = torch.tensor(features_batch, device=device)
+                target = torch.tensor(target_batch, device=device)
 
-            # Forward pass
-            prediction = model(features)
-            loss = loss_fn(prediction, target)
+                # Forward pass
+                prediction = model(features)
+                loss = loss_fn(prediction, target)
 
-            optimizer.zero_grad()
-            # Backprop step
-            loss.backward()
-            optimizer.step()
+                optimizer.zero_grad()
+                # Backprop step
+                loss.backward()
+                optimizer.step()
 
-            # Track metrics
-            batch_rows = target.size(0)
-            total_train_loss += float(loss.item()) * batch_rows
-            total_train_rows += batch_rows
+                # Track metrics
+                batch_rows = target.size(0)
+                total_train_loss += float(loss.item()) * batch_rows
+                total_train_rows += batch_rows
+                if batch_index % 200 == 0:
+                    running_mae = total_train_loss / total_train_rows
+                    print(
+                        f"----- epoch {epoch + 1} batch {batch_index} "
+                        f"train_mae={running_mae:.4f}"
+                    )
+            del features_array
+            del target_array
+            gc.collect()
+        if total_train_rows == 0:
+            raise ValueError("No training rows remain after dropping incomplete rows")
 
         # Eval mode
         model.eval()
@@ -283,17 +332,36 @@ def train(bucket):
         # Disable grads
         with torch.inference_mode():
             # Validate batches
-            for features, target in val_data:
-                # Move tensors
-                features = features.to(device)
-                target = target.to(device)
+            for key, features_array, target_array in iter_array_files(
+                bucket,
+                validation_keys,
+                station_categories,
+            ):
+                print(f"Validating file: {key}")
+                for features_batch, target_batch in iter_batches(
+                    features_array,
+                    target_array,
+                    batch_size,
+                    shuffle=False,
+                    rng=rng,
+                ):
+                    # Move tensors
+                    features = torch.tensor(features_batch, device=device)
+                    target = torch.tensor(target_batch, device=device)
 
-                # Forward pass
-                prediction = model(features)
+                    # Forward pass
+                    prediction = model(features)
 
-                # Sum errors
-                absolute_error_sum += float(torch.abs(prediction - target).sum().item())
-                total_val_rows += target.size(0)
+                    # Sum errors
+                    absolute_error_sum += float(
+                        torch.abs(prediction - target).sum().item()
+                    )
+                    total_val_rows += target.size(0)
+                del features_array
+                del target_array
+                gc.collect()
+        if total_val_rows == 0:
+            raise ValueError("No validation rows remain after dropping incomplete rows")
 
         train_mae = total_train_loss / total_train_rows
         val_mae = absolute_error_sum / total_val_rows
@@ -301,6 +369,7 @@ def train(bucket):
             f"Epoch {epoch + 1:2d} / {num_epochs:2d}: "
             f"train_mae={train_mae:.4f} val_mae={val_mae:.4f}"
         )
+        print("===== EPOCH COMPLETE =====")
 
         if val_mae < best_val_mae:
             save_model(model, MODEL_PATH)
