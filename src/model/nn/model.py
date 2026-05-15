@@ -28,42 +28,58 @@ FEATURES = [
     "precipitation",
     "wind",
 ]
+STATION_FEATURE = "station_id"
+NUMERIC_FEATURES = [column for column in FEATURES if column != STATION_FEATURE]
 TARGET = "net_flow"
 MODEL_COLUMNS = FEATURES + [TARGET]
 TRAIN_FILES = 95
 VALIDATION_FILES = 5
 HELD_OUT_FILES = 5
 EXPECTED_FILES = TRAIN_FILES + HELD_OUT_FILES
+CHECKPOINT_VERSION = 3
 NN_ARTIFACTS_DIR = Path(__file__).resolve().parents[3] / "artifacts" / "nn"
 MODEL_PATH = NN_ARTIFACTS_DIR / "nn-model.pt"
 BEST_METRICS_PATH = NN_ARTIFACTS_DIR / "nn-model-best.json"
+STATION_CATEGORIES_PATH = NN_ARTIFACTS_DIR / "station-categories.json"
+NORMALIZATION_STATS_PATH = NN_ARTIFACTS_DIR / "normalization-stats.json"
 
 
 class FlowcastNet(nn.Module):
-    def __init__(self, input_dim):
+    def __init__(self, numeric_dim, station_count):
         super().__init__()
-        self.input_dim = input_dim
-        dropout_p = 0.1
+        self.numeric_dim = numeric_dim
+        self.station_count = station_count
+        self.embedding_dim = 32
+        input_dim = numeric_dim + self.embedding_dim
+        self.station_embedding = nn.Embedding(station_count, self.embedding_dim)
         self.model = nn.Sequential(
-            nn.Linear(input_dim, 256),
+            nn.Linear(input_dim, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Dropout(dropout_p),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
             nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Dropout(dropout_p),
             nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.Linear(64, 1),
         )
 
-    def forward(self, x):
-        if x.ndim != 2:
-            raise ValueError("Expected x with shape [batch_size, num_features]")
-        if x.shape[1] != self.input_dim:
+    def forward(self, numeric_x, station_ids):
+        if numeric_x.ndim != 2:
+            raise ValueError("Expected numeric_x with shape [batch_size, num_features]")
+        if numeric_x.shape[1] != self.numeric_dim:
             raise ValueError(
-                f"Expected {self.input_dim} features, got {x.shape[1]}"
+                f"Expected {self.numeric_dim} features, got {numeric_x.shape[1]}"
             )
+        if station_ids.ndim != 1:
+            raise ValueError("Expected station_ids with shape [batch_size]")
 
+        station_x = self.station_embedding(station_ids)
+        x = torch.cat([numeric_x, station_x], dim=1)
         return self.model(x).squeeze(1)
 
 
@@ -96,20 +112,51 @@ def drop_rows_with_integer_station_ids(df):
 
 
 def iter_training_frames(bucket, keys):
-    for i, (key, frame) in enumerate(iter_csv_files_for_keys(bucket, keys)):
+    for key, frame in iter_csv_files_for_keys(bucket, keys):
         validate_columns(frame, key)
         frame["station_id"] = normalize_station_ids(frame["station_id"])
         frame = drop_rows_with_integer_station_ids(frame)
-        print(
-            f"Loaded file {i + 1:,}/{len(keys):,}: {key} | rows: {len(frame):,}"
-        )
         yield key, frame
 
 
-def collect_station_categories(bucket, keys):
+def update_numeric_stats(stats, frame):
+    numeric = frame[NUMERIC_FEATURES].apply(pd.to_numeric, errors="coerce")
+    numeric = numeric.dropna()
+    if numeric.empty:
+        return
+    values = numeric.to_numpy(dtype=np.float64, copy=True)
+    stats["count"] += values.shape[0]
+    stats["sum"] += values.sum(axis=0)
+    stats["square_sum"] += np.square(values).sum(axis=0)
+
+
+def finalize_numeric_stats(stats):
+    if stats["count"] == 0:
+        raise ValueError("No rows found for numeric normalization")
+    mean = stats["sum"] / stats["count"]
+    variance = (stats["square_sum"] / stats["count"]) - np.square(mean)
+    std = np.sqrt(np.maximum(variance, 1e-12))
+    return {
+        "mean": dict(zip(NUMERIC_FEATURES, mean.tolist())),
+        "std": dict(zip(NUMERIC_FEATURES, std.tolist())),
+    }
+
+
+def collect_training_metadata(bucket, fit_keys, validation_keys):
     station_categories = set()
     total_rows = 0
-    for key, frame in iter_training_frames(bucket, keys):
+    stats = {
+        "count": 0,
+        "sum": np.zeros(len(NUMERIC_FEATURES), dtype=np.float64),
+        "square_sum": np.zeros(len(NUMERIC_FEATURES), dtype=np.float64),
+    }
+    for key, frame in iter_training_frames(bucket, fit_keys):
+        total_rows += len(frame)
+        station_categories.update(frame["station_id"].dropna().unique())
+        update_numeric_stats(stats, frame)
+        del frame
+        gc.collect()
+    for key, frame in iter_training_frames(bucket, validation_keys):
         total_rows += len(frame)
         station_categories.update(frame["station_id"].dropna().unique())
         del frame
@@ -118,41 +165,42 @@ def collect_station_categories(bucket, keys):
         raise ValueError("No rows found for this split")
     if not station_categories:
         raise ValueError("No station IDs found for this split")
-    return sorted(station_categories), total_rows
+    return sorted(station_categories), finalize_numeric_stats(stats)
 
 
-def prepare(df, station_categories):
+def prepare(df, station_categories, normalization_stats):
     work = df[MODEL_COLUMNS].copy()
     categories = pd.CategoricalDtype(categories=station_categories)
     work["station_id"] = work["station_id"].astype(categories)
-    for column in FEATURES:
-        if column == "station_id":
-            continue
+    for column in NUMERIC_FEATURES:
         work[column] = pd.to_numeric(work[column], errors="coerce")
     work[TARGET] = pd.to_numeric(work[TARGET], errors="coerce")
-    rows_before = len(work)
     work = work.dropna(subset=MODEL_COLUMNS).reset_index(drop=True)
-    dropped_rows = rows_before - len(work)
-    if dropped_rows > 0:
-        print(f"Dropped rows: {dropped_rows:,} (missing required values)")
     work["station_id"] = work["station_id"].cat.codes.astype(np.int64)
+    for column in NUMERIC_FEATURES:
+        mean = normalization_stats["mean"][column]
+        std = normalization_stats["std"][column]
+        work[column] = (work[column] - mean) / std
     return work
 
 
-def make_arrays(df, station_categories):
-    prepared = prepare(df, station_categories)
+def make_arrays(df, station_categories, normalization_stats):
+    prepared = prepare(df, station_categories, normalization_stats)
     if prepared.empty:
         return None
-    features = np.ascontiguousarray(
-        prepared[FEATURES].to_numpy(dtype=np.float32, copy=True)
+    numeric_features = np.ascontiguousarray(
+        prepared[NUMERIC_FEATURES].to_numpy(dtype=np.float32, copy=True)
+    )
+    station_ids = np.ascontiguousarray(
+        prepared[STATION_FEATURE].to_numpy(dtype=np.int64, copy=True)
     )
     target = np.ascontiguousarray(
         prepared[TARGET].to_numpy(dtype=np.float32, copy=True)
     )
-    return features, target
+    return numeric_features, station_ids, target
 
 
-def iter_batches(features, target, batch_size, shuffle, rng):
+def iter_batches(numeric_features, station_ids, target, batch_size, shuffle, rng):
     row_count = len(target)
     if shuffle:
         order = rng.permutation(row_count)
@@ -161,22 +209,21 @@ def iter_batches(features, target, batch_size, shuffle, rng):
     for start in range(0, row_count, batch_size):
         stop = min(start + batch_size, row_count)
         if order is None:
-            yield features[start:stop], target[start:stop]
+            yield numeric_features[start:stop], station_ids[start:stop], target[start:stop]
         else:
             batch_rows = order[start:stop]
-            yield features[batch_rows], target[batch_rows]
+            yield numeric_features[batch_rows], station_ids[batch_rows], target[batch_rows]
 
 
-def iter_array_files(bucket, keys, station_categories):
+def iter_array_files(bucket, keys, station_categories, normalization_stats):
     for key, frame in iter_training_frames(bucket, keys):
-        arrays = make_arrays(frame, station_categories)
+        arrays = make_arrays(frame, station_categories, normalization_stats)
         del frame
-        if arrays is None:
-            print(f"Skipped file with no usable rows: {key}")
-        else:
-            features, target = arrays
-            yield key, features, target
-            del features
+        if arrays is not None:
+            numeric_features, station_ids, target = arrays
+            yield key, numeric_features, station_ids, target
+            del numeric_features
+            del station_ids
             del target
         gc.collect()
 
@@ -191,21 +238,26 @@ def load_data(bucket):
     train_keys = keys[:TRAIN_FILES]
     fit_keys = train_keys[:-VALIDATION_FILES]
     validation_keys = train_keys[-VALIDATION_FILES:]
-    station_categories, total_rows = collect_station_categories(
+    station_categories, normalization_stats = collect_training_metadata(
         bucket,
-        fit_keys + validation_keys,
+        fit_keys,
+        validation_keys,
     )
 
-    print(
-        f"Rows: {total_rows:,}; station categories: {len(station_categories):,}"
-    )
-    return fit_keys, validation_keys, station_categories, len(FEATURES)
+    return fit_keys, validation_keys, station_categories, normalization_stats
 
 
 def save_model(model, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), path)
-    print(f"Saved model to {path}")
+
+
+def write_json(path, data):
+    NN_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    with temp_path.open("w") as file:
+        json.dump(data, file, indent=2, sort_keys=True)
+    temp_path.replace(path)
 
 
 def read_best_val_mae():
@@ -213,20 +265,20 @@ def read_best_val_mae():
         return float("inf")
     with BEST_METRICS_PATH.open() as file:
         data = json.load(file)
+    if data.get("checkpoint_version") != CHECKPOINT_VERSION:
+        return float("inf")
     return float(data["best_val_mae"])
 
 
 def write_best_metrics(best_val_mae, epoch):
-    NN_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    temp_path = BEST_METRICS_PATH.with_suffix(f"{BEST_METRICS_PATH.suffix}.tmp")
-    with temp_path.open("w") as file:
-        json.dump(
-            {"best_val_mae": best_val_mae, "epoch": epoch},
-            file,
-            indent=2,
-            sort_keys=True,
-        )
-    temp_path.replace(BEST_METRICS_PATH)
+    write_json(
+        BEST_METRICS_PATH,
+        {
+            "best_val_mae": best_val_mae,
+            "checkpoint_version": CHECKPOINT_VERSION,
+            "epoch": epoch,
+        },
+    )
 
 
 def pick_batch_size(device):
@@ -239,7 +291,7 @@ def pick_batch_size(device):
 
 def train(bucket):
     learning_rate = 1e-3
-    num_epochs = 20
+    num_epochs = 200
     seed = 2024
     rng = np.random.default_rng(seed)
     torch.set_num_threads(1)
@@ -248,116 +300,109 @@ def train(bucket):
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
-        print("MPS detected; using CPU for stability")
         device = torch.device("cpu")
     else:
         device = torch.device("cpu")
 
     batch_size = pick_batch_size(device)
-    print(f"device={device} batch_size={batch_size:,}")
-    print("===== TRAINING START =====")
-
+    print(f"device={device} batch_size={batch_size:,} epochs={num_epochs}")
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     best_val_mae = read_best_val_mae()
-    if best_val_mae < float("inf"):
-        print(f"Existing best val_mae: {best_val_mae:.4f} (must beat to save)")
 
-    fit_keys, validation_keys, station_categories, input_dim = load_data(bucket)
+    fit_keys, validation_keys, station_categories, normalization_stats = load_data(bucket)
+    write_json(STATION_CATEGORIES_PATH, station_categories)
+    write_json(NORMALIZATION_STATS_PATH, normalization_stats)
 
     # Build model
-    model = FlowcastNet(input_dim=input_dim).to(device)
+    model = FlowcastNet(
+        numeric_dim=len(NUMERIC_FEATURES),
+        station_count=len(station_categories),
+    ).to(device)
 
     # Training setup
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=learning_rate,
+        weight_decay=1e-4,
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=1,
+        threshold=1e-4,
+        threshold_mode="abs",
+        min_lr=1e-6,
+    )
     loss_fn = nn.L1Loss()
 
     for epoch in range(num_epochs):
-        print(f"===== EPOCH {epoch + 1}/{num_epochs} =====")
-        # Train mode
         model.train()
         total_train_loss = 0.0
         total_train_rows = 0
-        batch_index = 0
 
-        # Train batches
-        for key, features_array, target_array in iter_array_files(
+        for key, numeric_array, station_array, target_array in iter_array_files(
             bucket,
             fit_keys,
             station_categories,
+            normalization_stats,
         ):
-            print(f"Training file: {key}")
-            for features_batch, target_batch in iter_batches(
-                features_array,
+            for numeric_batch, station_batch, target_batch in iter_batches(
+                numeric_array,
+                station_array,
                 target_array,
                 batch_size,
                 shuffle=True,
                 rng=rng,
             ):
-                batch_index += 1
-                # Move tensors
-                features = torch.tensor(features_batch, device=device)
+                numeric_features = torch.tensor(numeric_batch, device=device)
+                station_ids = torch.tensor(station_batch, device=device)
                 target = torch.tensor(target_batch, device=device)
-
-                # Forward pass
-                prediction = model(features)
+                prediction = model(numeric_features, station_ids)
                 loss = loss_fn(prediction, target)
-
                 optimizer.zero_grad()
-                # Backprop step
                 loss.backward()
                 optimizer.step()
-
-                # Track metrics
                 batch_rows = target.size(0)
                 total_train_loss += float(loss.item()) * batch_rows
                 total_train_rows += batch_rows
-                if batch_index % 200 == 0:
-                    running_mae = total_train_loss / total_train_rows
-                    print(
-                        f"----- epoch {epoch + 1} batch {batch_index} "
-                        f"train_mae={running_mae:.4f}"
-                    )
-            del features_array
+            del numeric_array
+            del station_array
             del target_array
             gc.collect()
         if total_train_rows == 0:
             raise ValueError("No training rows remain after dropping incomplete rows")
 
-        # Eval mode
         model.eval()
         absolute_error_sum = 0.0
         total_val_rows = 0
-        # Disable grads
         with torch.inference_mode():
-            # Validate batches
-            for key, features_array, target_array in iter_array_files(
+            for key, numeric_array, station_array, target_array in iter_array_files(
                 bucket,
                 validation_keys,
                 station_categories,
+                normalization_stats,
             ):
-                print(f"Validating file: {key}")
-                for features_batch, target_batch in iter_batches(
-                    features_array,
+                for numeric_batch, station_batch, target_batch in iter_batches(
+                    numeric_array,
+                    station_array,
                     target_array,
                     batch_size,
                     shuffle=False,
                     rng=rng,
                 ):
-                    # Move tensors
-                    features = torch.tensor(features_batch, device=device)
+                    numeric_features = torch.tensor(numeric_batch, device=device)
+                    station_ids = torch.tensor(station_batch, device=device)
                     target = torch.tensor(target_batch, device=device)
-
-                    # Forward pass
-                    prediction = model(features)
-
-                    # Sum errors
+                    prediction = model(numeric_features, station_ids)
                     absolute_error_sum += float(
                         torch.abs(prediction - target).sum().item()
                     )
                     total_val_rows += target.size(0)
-                del features_array
+                del numeric_array
+                del station_array
                 del target_array
                 gc.collect()
         if total_val_rows == 0:
@@ -365,17 +410,18 @@ def train(bucket):
 
         train_mae = total_train_loss / total_train_rows
         val_mae = absolute_error_sum / total_val_rows
-        print(
-            f"Epoch {epoch + 1:2d} / {num_epochs:2d}: "
-            f"train_mae={train_mae:.4f} val_mae={val_mae:.4f}"
-        )
-        print("===== EPOCH COMPLETE =====")
-
-        if val_mae < best_val_mae:
+        scheduler.step(val_mae)
+        current_lr = optimizer.param_groups[0]["lr"]
+        saved = val_mae < best_val_mae
+        if saved:
             save_model(model, MODEL_PATH)
             write_best_metrics(val_mae, epoch + 1)
             best_val_mae = val_mae
-            print(f"New best val_mae={val_mae:.4f}")
+        print(
+            f"Epoch {epoch + 1:2d}/{num_epochs}: "
+            f"train_mae={train_mae:.4f} val_mae={val_mae:.4f} lr={current_lr:.2e}"
+            + (" *" if saved else "")
+        )
 
 
 if __name__ == "__main__":
