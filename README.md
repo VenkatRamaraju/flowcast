@@ -1,6 +1,6 @@
 # Flowcast
 
-Flowcast predicts short-term bike station net flow for the Bay Area. It combines Bay Wheels trip history, station coordinates, calendar features, weather data, a trained XGBoost regression model (with an optional PyTorch baseline under `src/model/nn/`), a FastAPI backend, and a map-first React frontend.
+Flowcast predicts short-term bike station net flow for the Bay Area. It combines Bay Wheels trip history, station coordinates, calendar features, weather data, a trained XGBoost regression model, an experimental PyTorch neural regressor, a FastAPI backend, and a map-first React frontend.
 
 ## Overview
 
@@ -10,11 +10,11 @@ Flowcast estimates the signed net bike flow at a station for a 15-minute window:
 - Negative values indicate net departures.
 - Near-zero values indicate a balanced station.
 
-The project is organized around four pieces:
+The project is organized around five pieces:
 
 - `src/data/` downloads and transforms raw Bay Wheels trip data into model-ready rows.
 - `src/model/xgboost/` trains, evaluates, saves, and loads the XGBoost model.
-- `src/model/nn/` holds an experimental PyTorch regressor; artifacts go under `artifacts/nn/`.
+- `src/model/nn/` trains an experimental PyTorch regressor with normalized numeric inputs and station embeddings.
 - `src/api/` serves station metadata and live station forecasts through FastAPI.
 - `frontend/` renders an interactive Bay Area map and station detail panel.
 
@@ -32,6 +32,10 @@ flowchart LR
     MixedS3 --> Train[src/model/xgboost/model.py]
     Train --> Model[artifacts/xgboost/model-categorical.ubj]
     Train --> Categories[artifacts/xgboost/station-categories.json]
+    MixedS3 --> NNTrain[src/model/nn/model.py]
+    NNTrain --> NNModel[artifacts/nn/nn-model.pt]
+    NNTrain --> NNStats[artifacts/nn/normalization-stats.json]
+    NNTrain --> NNStations[artifacts/nn/station-categories.json]
     Transform --> Mapping[artifacts/station-mapping.json]
 
     Model --> Inference[src/model/xgboost/inference.py]
@@ -51,7 +55,7 @@ Important paths:
 - `src/model/xgboost/model.py` trains the categorical XGBoost regressor and writes model artifacts.
 - `src/model/xgboost/eval.py` evaluates the saved model against held-out S3 files.
 - `src/model/xgboost/inference.py` loads the saved booster and station category artifact from `artifacts/xgboost/` for prediction.
-- `src/model/nn/model.py` trains the PyTorch MLP and writes checkpoints under `artifacts/nn/`.
+- `src/model/nn/model.py` trains the PyTorch station-embedding MLP and writes checkpoints plus preprocessing artifacts under `artifacts/nn/`.
 - `src/api/station.py` serves `artifacts/station-mapping.json`.
 - `src/api/live.py` fetches live weather and GBFS availability, derives calendar features, and runs inference.
 - `frontend/src/` contains the React application, API client, map, panels, and UI state.
@@ -90,15 +94,17 @@ Artifacts live under `artifacts/` with subfolders for each trainer:
   - `held-out-keys.json` — S3 CSV keys reserved for evaluation.
   - `model-categorical.ubj` — trained booster; required for `/predict` and live endpoints. Not shipped in the repo snapshot.
 
-- **`artifacts/nn/`** (optional PyTorch baseline)
-  - `nn-model.pt` — best state dict when training improves validation MAE.
-  - `nn-model-best.json` — best validation MAE and epoch for that checkpoint.
+- **`artifacts/nn/`** (experimental PyTorch model)
+  - `nn-model.pt` — best PyTorch state dict when training improves validation MAE.
+  - `nn-model-best.json` — best validation MAE, epoch, and checkpoint version.
+  - `station-categories.json` — station ID vocabulary used by the embedding layer.
+  - `normalization-stats.json` — mean/std values used to z-score numeric inputs.
 
 `src/data/predicthq.py` can export nearby PredictHQ events to `artifacts/predicthq_events.json`, but the current model feature list in `src/model/xgboost/model.py` does not include event-derived fields.
 
 ## Model Training Process and Results
 
-Training is implemented in `src/model/xgboost/model.py`. The pipeline reads mixed CSV parts from the `lyft-training-data-mixed` S3 bucket, validates that each file contains the expected model columns, normalizes station IDs, drops rows with integer-only station IDs, and trains an XGBoost regressor with native categorical support for `station_id`.
+The default model is implemented in `src/model/xgboost/model.py`. The pipeline reads mixed CSV parts from the `lyft-training-data-mixed` S3 bucket, validates that each file contains the expected model columns, normalizes station IDs, drops rows with integer-only station IDs, and trains an XGBoost regressor with native categorical support for `station_id`.
 
 The training split is defined in code:
 
@@ -107,7 +113,7 @@ The training split is defined in code:
 - 5 held-out evaluation files.
 - 5 of the training files reserved for validation.
 
-The model uses `reg:absoluteerror` with MAE as the evaluation metric, histogram tree construction, early stopping, and categorical splits. The current validation run reports an MAE of `1.08`. Training writes:
+The XGBoost model uses `reg:absoluteerror` with MAE as the evaluation metric, histogram tree construction, early stopping, and categorical splits. Training writes:
 
 - `artifacts/xgboost/model-categorical.ubj`
 - `artifacts/xgboost/station-categories.json`
@@ -118,6 +124,8 @@ Evaluation is implemented in `src/model/xgboost/eval.py`. It loads the held-out 
 ```bash
 python main.py --eval
 ```
+
+The neural network trainer is implemented in `src/model/nn/model.py` and can be run with `--model nn`. It uses the same mixed S3 files, computes z-score normalization stats for numeric features, maps station IDs into a learned embedding table, and trains a PyTorch MLP with AdamW, batch normalization, and a validation-loss learning-rate scheduler. It currently trains for 200 epochs and saves only when validation MAE improves.
 
 ## Backend APIs
 
@@ -281,22 +289,24 @@ Create mixed S3 training parts from transformed CSV files:
 python src/model/data.py
 ```
 
-Train the model:
+Train the default XGBoost model:
 
 ```bash
-python main.py --train
+python main.py --train --model xgboost
 ```
 
-Evaluate the saved model:
+`--model xgboost` is the default, so `python main.py --train` is equivalent.
+
+Evaluate the saved XGBoost model:
 
 ```bash
 python main.py --eval
 ```
 
-Train the optional PyTorch baseline (reads the same mixed S3 layout; writes under `artifacts/nn/`):
+Train the PyTorch neural model:
 
 ```bash
-python src/model/nn/model.py
+python main.py --train --model nn
 ```
 
 The data and training steps require AWS credentials and S3 access. Relevant environment variables include:
