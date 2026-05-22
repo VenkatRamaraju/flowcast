@@ -275,6 +275,50 @@ npm run preview
 
 Set `VITE_API_URL` in `frontend/.env.local` when the frontend is deployed separately from the backend. Leave it unset for local development with the Vite proxy.
 
+### Docker
+
+The `Dockerfile` builds the React frontend, copies the compiled assets into the Python runtime image, and starts FastAPI on port `9000`. The same container serves the UI at `/` and the API routes at `/stations`, `/stations/{station_id}/live`, and `/predict`.
+
+Build the image from the repository root:
+
+```bash
+docker build -t flowcast .
+```
+
+Run the container:
+
+```bash
+docker run --rm -p 9000:9000 flowcast
+```
+
+Open `http://localhost:9000` in a browser.
+
+The build copies the local `artifacts/` directory into the image. For prediction routes, make sure these files exist before building:
+
+```text
+artifacts/xgboost/model-categorical.ubj
+artifacts/xgboost/station-categories.json
+artifacts/station-mapping.json
+```
+
+If you want the container to use artifacts from your host instead of the copies baked into the image, mount the directory read-only:
+
+```bash
+docker run --rm -p 9000:9000 -v "$PWD/artifacts:/app/artifacts:ro" flowcast
+```
+
+To run it in the background:
+
+```bash
+docker run -d --name flowcast -p 9000:9000 flowcast
+```
+
+Stop the background container with:
+
+```bash
+docker stop flowcast
+```
+
 ### ETL, Training, and Evaluation
 
 Run ETL for a slice of the Bay Wheels archive catalogue:

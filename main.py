@@ -6,10 +6,15 @@ Description: Entrypoint for ETL, training, evaluation, and prediction API
 
 # Imports
 import argparse
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from src.api.live import router as live_router
 from src.api.station import router as stations_router
+
+# Constants
+FRONTEND_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
 
 
 class PredictRequest(BaseModel):
@@ -46,6 +51,9 @@ def create_app():
             "precipitation": payload["precipitation"],
             "wind": payload["wind"],
         }
+
+    if FRONTEND_DIST.exists():
+        app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
     return app
 
