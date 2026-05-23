@@ -29,14 +29,29 @@ FEATURES = [
     "wind",
 ]
 STATION_FEATURE = "station_id"
-NUMERIC_FEATURES = [column for column in FEATURES if column != STATION_FEATURE]
+RAW_NUMERIC_FEATURES = [column for column in FEATURES if column != STATION_FEATURE]
+CYCLIC_FEATURE_SPECS = {
+    "day_of_week": (7, 0),
+    "time_bucket": (96, 1),
+    "week_of_year": (52, 1),
+    "month": (12, 1),
+}
+PASSTHROUGH_NUMERIC_FEATURES = [
+    column for column in RAW_NUMERIC_FEATURES if column not in CYCLIC_FEATURE_SPECS
+]
+CYCLIC_NUMERIC_FEATURES = [
+    f"{column}_{part}"
+    for column in CYCLIC_FEATURE_SPECS
+    for part in ("sin", "cos")
+]
+NUMERIC_FEATURES = PASSTHROUGH_NUMERIC_FEATURES + CYCLIC_NUMERIC_FEATURES
 TARGET = "net_flow"
 MODEL_COLUMNS = FEATURES + [TARGET]
 TRAIN_FILES = 95
 VALIDATION_FILES = 5
 HELD_OUT_FILES = 5
 EXPECTED_FILES = TRAIN_FILES + HELD_OUT_FILES
-CHECKPOINT_VERSION = 3
+CHECKPOINT_VERSION = 4
 NN_ARTIFACTS_DIR = Path(__file__).resolve().parents[3] / "artifacts" / "nn"
 MODEL_PATH = NN_ARTIFACTS_DIR / "nn-model.pt"
 BEST_METRICS_PATH = NN_ARTIFACTS_DIR / "nn-model-best.json"
@@ -120,8 +135,8 @@ def iter_training_frames(bucket, keys):
 
 
 def update_numeric_stats(stats, frame):
-    numeric = frame[NUMERIC_FEATURES].apply(pd.to_numeric, errors="coerce")
-    numeric = numeric.dropna()
+    work = convert_numeric_features(frame)
+    numeric = work[NUMERIC_FEATURES].dropna()
     if numeric.empty:
         return
     values = numeric.to_numpy(dtype=np.float64, copy=True)
@@ -140,6 +155,18 @@ def finalize_numeric_stats(stats):
         "mean": dict(zip(NUMERIC_FEATURES, mean.tolist())),
         "std": dict(zip(NUMERIC_FEATURES, std.tolist())),
     }
+
+
+def convert_numeric_features(df):
+    work = df.copy()
+    for column in RAW_NUMERIC_FEATURES:
+        work[column] = pd.to_numeric(work[column], errors="coerce")
+    for column, spec in CYCLIC_FEATURE_SPECS.items():
+        period, offset = spec
+        radians = 2 * np.pi * ((work[column] - offset) / period)
+        work[f"{column}_sin"] = np.sin(radians)
+        work[f"{column}_cos"] = np.cos(radians)
+    return work
 
 
 def collect_training_metadata(bucket, fit_keys, validation_keys):
@@ -172,10 +199,11 @@ def prepare(df, station_categories, normalization_stats):
     work = df[MODEL_COLUMNS].copy()
     categories = pd.CategoricalDtype(categories=station_categories)
     work["station_id"] = work["station_id"].astype(categories)
-    for column in NUMERIC_FEATURES:
-        work[column] = pd.to_numeric(work[column], errors="coerce")
+    work = convert_numeric_features(work)
     work[TARGET] = pd.to_numeric(work[TARGET], errors="coerce")
-    work = work.dropna(subset=MODEL_COLUMNS).reset_index(drop=True)
+    work = work.dropna(
+        subset=[STATION_FEATURE, TARGET] + NUMERIC_FEATURES
+    ).reset_index(drop=True)
     work["station_id"] = work["station_id"].cat.codes.astype(np.int64)
     for column in NUMERIC_FEATURES:
         mean = normalization_stats["mean"][column]
