@@ -29,29 +29,32 @@ FEATURES = [
     "wind",
 ]
 STATION_FEATURE = "station_id"
-RAW_NUMERIC_FEATURES = [column for column in FEATURES if column != STATION_FEATURE]
-CYCLIC_FEATURE_SPECS = {
+EMBEDDED_FEATURE_SPECS = {
     "day_of_week": (7, 0),
     "time_bucket": (96, 1),
     "week_of_year": (52, 1),
     "month": (12, 1),
 }
-PASSTHROUGH_NUMERIC_FEATURES = [
-    column for column in RAW_NUMERIC_FEATURES if column not in CYCLIC_FEATURE_SPECS
+EMBEDDED_FEATURES = list(EMBEDDED_FEATURE_SPECS)
+EMBEDDED_FEATURE_DIMS = {
+    "day_of_week": 4,
+    "time_bucket": 16,
+    "week_of_year": 8,
+    "month": 4,
+}
+RAW_NUMERIC_FEATURES = [
+    column
+    for column in FEATURES
+    if column != STATION_FEATURE and column not in EMBEDDED_FEATURES
 ]
-CYCLIC_NUMERIC_FEATURES = [
-    f"{column}_{part}"
-    for column in CYCLIC_FEATURE_SPECS
-    for part in ("sin", "cos")
-]
-NUMERIC_FEATURES = PASSTHROUGH_NUMERIC_FEATURES + CYCLIC_NUMERIC_FEATURES
+NUMERIC_FEATURES = RAW_NUMERIC_FEATURES
 TARGET = "net_flow"
 MODEL_COLUMNS = FEATURES + [TARGET]
 TRAIN_FILES = 95
 VALIDATION_FILES = 5
 HELD_OUT_FILES = 5
 EXPECTED_FILES = TRAIN_FILES + HELD_OUT_FILES
-CHECKPOINT_VERSION = 4
+CHECKPOINT_VERSION = 5
 NN_ARTIFACTS_DIR = Path(__file__).resolve().parents[3] / "artifacts" / "nn"
 MODEL_PATH = NN_ARTIFACTS_DIR / "nn-model.pt"
 BEST_METRICS_PATH = NN_ARTIFACTS_DIR / "nn-model-best.json"
@@ -64,9 +67,19 @@ class FlowcastNet(nn.Module):
         super().__init__()
         self.numeric_dim = numeric_dim
         self.station_count = station_count
-        self.embedding_dim = 32
-        input_dim = numeric_dim + self.embedding_dim
-        self.station_embedding = nn.Embedding(station_count, self.embedding_dim)
+        self.station_embedding_dim = 32
+        self.station_embedding = nn.Embedding(station_count, self.station_embedding_dim)
+        self.feature_embeddings = nn.ModuleDict(
+            {
+                column: nn.Embedding(spec[0], EMBEDDED_FEATURE_DIMS[column])
+                for column, spec in EMBEDDED_FEATURE_SPECS.items()
+            }
+        )
+        input_dim = (
+            numeric_dim
+            + self.station_embedding_dim
+            + sum(EMBEDDED_FEATURE_DIMS.values())
+        )
         self.model = nn.Sequential(
             nn.Linear(input_dim, 512),
             nn.BatchNorm1d(512),
@@ -83,7 +96,7 @@ class FlowcastNet(nn.Module):
             nn.Linear(64, 1),
         )
 
-    def forward(self, numeric_x, station_ids):
+    def forward(self, numeric_x, station_ids, embedded_x):
         if numeric_x.ndim != 2:
             raise ValueError("Expected numeric_x with shape [batch_size, num_features]")
         if numeric_x.shape[1] != self.numeric_dim:
@@ -92,9 +105,18 @@ class FlowcastNet(nn.Module):
             )
         if station_ids.ndim != 1:
             raise ValueError("Expected station_ids with shape [batch_size]")
+        if embedded_x.ndim != 2:
+            raise ValueError("Expected embedded_x with shape [batch_size, num_features]")
+        if embedded_x.shape[1] != len(EMBEDDED_FEATURES):
+            raise ValueError(
+                f"Expected {len(EMBEDDED_FEATURES)} embedded features, "
+                f"got {embedded_x.shape[1]}"
+            )
 
-        station_x = self.station_embedding(station_ids)
-        x = torch.cat([numeric_x, station_x], dim=1)
+        parts = [numeric_x, self.station_embedding(station_ids)]
+        for i, column in enumerate(EMBEDDED_FEATURES):
+            parts.append(self.feature_embeddings[column](embedded_x[:, i]))
+        x = torch.cat(parts, dim=1)
         return self.model(x).squeeze(1)
 
 
@@ -159,13 +181,18 @@ def finalize_numeric_stats(stats):
 
 def convert_numeric_features(df):
     work = df.copy()
-    for column in RAW_NUMERIC_FEATURES:
+    for column in RAW_NUMERIC_FEATURES + EMBEDDED_FEATURES:
         work[column] = pd.to_numeric(work[column], errors="coerce")
-    for column, spec in CYCLIC_FEATURE_SPECS.items():
-        period, offset = spec
-        radians = 2 * np.pi * ((work[column] - offset) / period)
-        work[f"{column}_sin"] = np.sin(radians)
-        work[f"{column}_cos"] = np.cos(radians)
+    return work
+
+
+def encode_embedded_features(df):
+    work = df.copy()
+    for column, spec in EMBEDDED_FEATURE_SPECS.items():
+        size, offset = spec
+        codes = work[column] - offset
+        valid = codes.between(0, size - 1) & ((codes % 1) == 0)
+        work[column] = codes.where(valid)
     return work
 
 
@@ -200,11 +227,14 @@ def prepare(df, station_categories, normalization_stats):
     categories = pd.CategoricalDtype(categories=station_categories)
     work["station_id"] = work["station_id"].astype(categories)
     work = convert_numeric_features(work)
+    work = encode_embedded_features(work)
     work[TARGET] = pd.to_numeric(work[TARGET], errors="coerce")
     work = work.dropna(
-        subset=[STATION_FEATURE, TARGET] + NUMERIC_FEATURES
+        subset=[STATION_FEATURE, TARGET] + NUMERIC_FEATURES + EMBEDDED_FEATURES
     ).reset_index(drop=True)
     work["station_id"] = work["station_id"].cat.codes.astype(np.int64)
+    for column in EMBEDDED_FEATURES:
+        work[column] = work[column].astype(np.int64)
     for column in NUMERIC_FEATURES:
         mean = normalization_stats["mean"][column]
         std = normalization_stats["std"][column]
@@ -222,13 +252,24 @@ def make_arrays(df, station_categories, normalization_stats):
     station_ids = np.ascontiguousarray(
         prepared[STATION_FEATURE].to_numpy(dtype=np.int64, copy=True)
     )
+    embedded_features = np.ascontiguousarray(
+        prepared[EMBEDDED_FEATURES].to_numpy(dtype=np.int64, copy=True)
+    )
     target = np.ascontiguousarray(
         prepared[TARGET].to_numpy(dtype=np.float32, copy=True)
     )
-    return numeric_features, station_ids, target
+    return numeric_features, station_ids, embedded_features, target
 
 
-def iter_batches(numeric_features, station_ids, target, batch_size, shuffle, rng):
+def iter_batches(
+    numeric_features,
+    station_ids,
+    embedded_features,
+    target,
+    batch_size,
+    shuffle,
+    rng,
+):
     row_count = len(target)
     if shuffle:
         order = rng.permutation(row_count)
@@ -237,10 +278,20 @@ def iter_batches(numeric_features, station_ids, target, batch_size, shuffle, rng
     for start in range(0, row_count, batch_size):
         stop = min(start + batch_size, row_count)
         if order is None:
-            yield numeric_features[start:stop], station_ids[start:stop], target[start:stop]
+            yield (
+                numeric_features[start:stop],
+                station_ids[start:stop],
+                embedded_features[start:stop],
+                target[start:stop],
+            )
         else:
             batch_rows = order[start:stop]
-            yield numeric_features[batch_rows], station_ids[batch_rows], target[batch_rows]
+            yield (
+                numeric_features[batch_rows],
+                station_ids[batch_rows],
+                embedded_features[batch_rows],
+                target[batch_rows],
+            )
 
 
 def iter_array_files(bucket, keys, station_categories, normalization_stats):
@@ -248,10 +299,11 @@ def iter_array_files(bucket, keys, station_categories, normalization_stats):
         arrays = make_arrays(frame, station_categories, normalization_stats)
         del frame
         if arrays is not None:
-            numeric_features, station_ids, target = arrays
-            yield key, numeric_features, station_ids, target
+            numeric_features, station_ids, embedded_features, target = arrays
+            yield key, numeric_features, station_ids, embedded_features, target
             del numeric_features
             del station_ids
+            del embedded_features
             del target
         gc.collect()
 
@@ -371,15 +423,22 @@ def train(bucket):
         total_train_loss = 0.0
         total_train_rows = 0
 
-        for key, numeric_array, station_array, target_array in iter_array_files(
-            bucket,
-            fit_keys,
-            station_categories,
-            normalization_stats,
-        ):
-            for numeric_batch, station_batch, target_batch in iter_batches(
+        for (
+            key,
+            numeric_array,
+            station_array,
+            embedded_array,
+            target_array,
+        ) in iter_array_files(bucket, fit_keys, station_categories, normalization_stats):
+            for (
+                numeric_batch,
+                station_batch,
+                embedded_batch,
+                target_batch,
+            ) in iter_batches(
                 numeric_array,
                 station_array,
+                embedded_array,
                 target_array,
                 batch_size,
                 shuffle=True,
@@ -387,8 +446,9 @@ def train(bucket):
             ):
                 numeric_features = torch.tensor(numeric_batch, device=device)
                 station_ids = torch.tensor(station_batch, device=device)
+                embedded_features = torch.tensor(embedded_batch, device=device)
                 target = torch.tensor(target_batch, device=device)
-                prediction = model(numeric_features, station_ids)
+                prediction = model(numeric_features, station_ids, embedded_features)
                 loss = loss_fn(prediction, target)
                 optimizer.zero_grad()
                 loss.backward()
@@ -398,6 +458,7 @@ def train(bucket):
                 total_train_rows += batch_rows
             del numeric_array
             del station_array
+            del embedded_array
             del target_array
             gc.collect()
         if total_train_rows == 0:
@@ -407,15 +468,24 @@ def train(bucket):
         absolute_error_sum = 0.0
         total_val_rows = 0
         with torch.inference_mode():
-            for key, numeric_array, station_array, target_array in iter_array_files(
-                bucket,
-                validation_keys,
-                station_categories,
-                normalization_stats,
+            for (
+                key,
+                numeric_array,
+                station_array,
+                embedded_array,
+                target_array,
+            ) in iter_array_files(
+                bucket, validation_keys, station_categories, normalization_stats
             ):
-                for numeric_batch, station_batch, target_batch in iter_batches(
+                for (
+                    numeric_batch,
+                    station_batch,
+                    embedded_batch,
+                    target_batch,
+                ) in iter_batches(
                     numeric_array,
                     station_array,
+                    embedded_array,
                     target_array,
                     batch_size,
                     shuffle=False,
@@ -423,14 +493,16 @@ def train(bucket):
                 ):
                     numeric_features = torch.tensor(numeric_batch, device=device)
                     station_ids = torch.tensor(station_batch, device=device)
+                    embedded_features = torch.tensor(embedded_batch, device=device)
                     target = torch.tensor(target_batch, device=device)
-                    prediction = model(numeric_features, station_ids)
+                    prediction = model(numeric_features, station_ids, embedded_features)
                     absolute_error_sum += float(
                         torch.abs(prediction - target).sum().item()
                     )
                     total_val_rows += target.size(0)
                 del numeric_array
                 del station_array
+                del embedded_array
                 del target_array
                 gc.collect()
         if total_val_rows == 0:
